@@ -5,3 +5,23 @@
 - **Confirm with fresh builds**: After changing defaults or partitions, do a clean build for the relevant env so you do not chase stale artifacts.
 - **Track the expected effect**: Before applying a change, state the expected log or behavior change so regressions are obvious.
 - **Stop if the environment changes unexpectedly**: If unrelated file edits appear or build outputs do not match expectations, pause and ask for direction.
+
+## Arduino Nano ESP32 Flashing
+- **Upload Protocol**: The Arduino Nano ESP32 uses native USB with DFU. Keep `upload_protocol = dfu` in `platformio.ini` (default behavior). Do not switch to `esptool` because it triggers a board reset to the ROM bootloader, disconnecting the port and causing the first flash to fail.
+- **Multiple Devices Workaround**: `dfu-util` fails when multiple ESP32 devices are plugged in because it doesn't know which one to flash. We address this using our `set_src_dir.py` pre-action script, which dynamically extracts the MAC address from the macOS `/dev/cu.usbmodem<MAC>...` port string and injects it into `dfu-util` using the `-S <serial>` flag.
+
+## Project Structure And Workflow
+- **Main production sketch**: `arduino-greenhouse-controller/` remains the Arduino-IDE-friendly primary sketch folder.
+- **Experimental sketches**: Additional sketches live in their own top-level folders, each with a single `.ino` file and any local support files such as `secrets.h`.
+- **Current experimental folders**: `TelegramSerial-test/`, `FastBot2-telegram-test/`, `telegram-forwarder/`, and `lora-sender/`.
+- **PlatformIO source switching**: Use `custom_src_dir = <folder-name>` in each environment and the shared `set_src_dir.py` script to point PlatformIO at the selected sketch folder.
+- **Keep Arduino compatibility**: Prefer one Arduino-style sketch per folder rather than converting experiments into shared `src/` trees unless there is a strong reason to do so.
+- **Secrets handling**: Keep credentials in per-sketch `secrets.h` files and rely on `*/secrets.h` in `.gitignore` so examples can stay public.
+
+## Important Learnings
+- **RYLR status values**: `RYLR_LoRaAT::checkStatus()` returns `0` for success, positive values for device-reported errors, and `-1` for parse or timeout failures.
+- **RYLR receive model**: `checkMessage()` returns a parsed message object with `from_address`, `rssi`, `snr`, `data_len`, and `data` fields. Prefer using those fields rather than reparsing raw modem output.
+- **Arduino Nano ESP32 RGB LED**: Built-in RGB aliases are `LEDR`, `LEDG`, and `LEDB`, and they are active-low on this board.
+- **Role LEDs in current sketches**: The LoRa sender uses a steady role color with a brief green blink for radio activity, and the Telegram forwarder does the same. Preserve that pattern when extending those sketches unless there is a reason to change it.
+- **Registry packages preferred**: For experiments, prefer PlatformIO Registry packages over raw Git dependencies when the package exists there.
+- **One env per sketch folder**: When adding a new experiment, add a new sketch folder plus a matching PlatformIO environment instead of overloading an existing one.
