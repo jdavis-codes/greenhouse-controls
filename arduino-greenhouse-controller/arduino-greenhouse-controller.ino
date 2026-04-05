@@ -17,8 +17,8 @@ OUTPUTS:
 
 
 //========================================================================BEGIN DECLARATIONS=========================================================
-#include <DS3231.h> //includes the library for using the DS3231 Time module
-DS3231  rtc(SDA, SCL); //sets up the time module
+#include <RTClib.h> //includes the library for using the DS3231 Time module
+RTC_DS3231 rtc; //sets up the time module
 
 #include <LiquidCrystal_I2C.h> //includes the library for using the 2x16 display with the built in I2C adapter
 LiquidCrystal_I2C lcd(0x27,20,4); // I2C address 0x27, 20 column and 4 row
@@ -246,11 +246,12 @@ void displayLCD(){
 }
 void printToMonitor(void){
 //=====================================================SUBROUTINE TO PRINT TO SERIAL MONITOR===========================================================
-   // Send date to serial monitor
-  Serial.print(rtc.getDateStr());
+  DateTime now = rtc.now();
+  // Send date to serial monitor
+  Serial.print(now.timestamp(DateTime::TIMESTAMP_DATE));
   Serial.print(F(" -- "));
   // Send time to serial monitor
-  Serial.println(rtc.getTimeStr());
+  Serial.println(now.timestamp(DateTime::TIMESTAMP_TIME));
 
   	// Printing the temperature and humidity on the serial monitor
 
@@ -306,10 +307,11 @@ void writeToSD(void){
   // if the file opened okay, write to it:
   if (myFile) {
     Serial.print(F("Writing to grnhs.txt..."));
+    DateTime now = rtc.now();
      //with the file open, write the date, time, temp, and humidity separated by commas
-    myFile.print(rtc.getDateStr());
+    myFile.print(now.timestamp(DateTime::TIMESTAMP_DATE));
     myFile.print(F(","));
-    myFile.print(rtc.getTimeStr());
+    myFile.print(now.timestamp(DateTime::TIMESTAMP_TIME));
 
     myFile.print(F(","));
     myFile.print(grnhouseTemp);
