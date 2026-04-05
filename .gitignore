@@ -39,3 +39,9 @@
 
 # debug information files
 *.dwo
+
+# custom:
+*.pio
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.DS_Store
