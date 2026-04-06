@@ -1,6 +1,9 @@
 #include <Arduino.h>
 #include "RYLR_LoRaAT.h"
 
+// guide for loara library usage:
+// https://medium.com/@jmwanderer/writing-an-arduino-library-for-a-uart-based-lora-device-9a3e42e91e94
+
 // Serial1 pins for the RYLR radio (adjust for your wiring)
 #define LORA_RX RX
 #define LORA_TX TX

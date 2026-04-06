@@ -1,15 +1,31 @@
+
+// standard faire for Arduino sketches / esp32 wifi connection
 #include <Arduino.h>
 #include <WiFi.h>
+
+// this is a simple library for printing messages directly to a telegram chat via WiFi, 
+// without needing a full Telegram bot library or webhook setup
 #include <TelegramSerial.h>
+
+// guide for loara library usage:
+// https://medium.com/@jmwanderer/writing-an-arduino-library-for-a-uart-based-lora-device-9a3e42e91e94
 #include "RYLR_LoRaAT.h"
+
+// secrets.h contains WiFi and Telegram bot credentials, which are not checked into source control
+// so the internet does not peek at them!
 #include "secrets.h"
 
 // Serial1 pins for the RYLR radio (adjust for your wiring)
 #define LORA_RX RX
 #define LORA_TX TX
 
+// this tg object talks to our telegram chat specified by ID here.
 TelegramSerial tg(WIFI_SSID, WIFI_PASSWORD, BOT_TOKEN, PERSONAL_CHAT_ID, &Serial);
+
+// LoRa library object
 RYLR_LoRaAT rylr;
+
+//global for activity LED blinking
 unsigned long activityBlinkUntil = 0;
 const unsigned long ACTIVITY_BLINK_MS = 120;
 
