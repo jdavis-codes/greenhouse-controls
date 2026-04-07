@@ -58,6 +58,8 @@ public:
     
     void setup();
     void tick();
+    void refreshDashboard();
+    void setLogFilePath(const String& path);
 
     // Data references to update
     void setSensorHistories(SensorHistory* histories, int count);
@@ -88,6 +90,8 @@ private:
     // Context state
     uint32_t dashboardMsgID;
     fb::ID targetChatID;
+    bool dashboardLiveView;
+    String logFilePath;
     int activeConfigIndex;
     bool awaitValue;
 
@@ -105,6 +109,7 @@ private:
     
     // Graph generation
     uint32_t sendUnicodeGraph(fb::ID chatID, uint32_t editMsgID = 0);
+    bool sendLogFile(fb::ID chatID);
     void sendSvgGraph(fb::ID chatID);
     
     // Helpers

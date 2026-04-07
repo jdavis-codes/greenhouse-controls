@@ -1,7 +1,7 @@
 #include "GreenhouseTelegram.h"
 
 GreenhouseTelegramBot::GreenhouseTelegramBot(const String& token, BotOperatingMode mode) 
-    : bot(token), operatingMode(mode), targetChatID(0LL), dashboardMsgID(0), activeConfigIndex(-1), awaitValue(false),
+    : bot(token), operatingMode(mode), targetChatID(0LL), dashboardLiveView(false), logFilePath("grnhs.txt"), dashboardMsgID(0), activeConfigIndex(-1), awaitValue(false),
       sensorHistories(nullptr), numSensors(0), eventHistories(nullptr), numEvents(0), settings(nullptr), numSettings(0),
       fanCallback(nullptr), irrigationCallback(nullptr), sidesCallback(nullptr) {}
 
@@ -11,6 +11,16 @@ void GreenhouseTelegramBot::setup() {
 
 void GreenhouseTelegramBot::tick() {
     bot.tick();
+}
+
+void GreenhouseTelegramBot::refreshDashboard() {
+    if (dashboardLiveView && dashboardMsgID != 0) {
+        dashboardMsgID = sendUnicodeGraph(targetChatID, dashboardMsgID);
+    }
+}
+
+void GreenhouseTelegramBot::setLogFilePath(const String& path) {
+    logFilePath = path;
 }
 
 void GreenhouseTelegramBot::setSensorHistories(SensorHistory* histories, int count) {
@@ -96,14 +106,31 @@ void GreenhouseTelegramBot::handleQuery(fb::Update& u) {
         bot.answerCallbackQuery(u.query().id());
         return;
     }
+    if (qData == "menu_display") {
+        dashboardMsgID = sendUnicodeGraph(chatID, msgID);
+        dashboardLiveView = true;
+        bot.answerCallbackQuery(u.query().id());
+        return;
+    }
     if (qData == "menu_svg") {
         sendSvgMenu(chatID, msgID);
         bot.answerCallbackQuery(u.query().id());
         return;
     }
+    if (qData == "dl_logs") {
+        bool ok = sendLogFile(chatID);
+        bot.answerCallbackQuery(u.query().id(), ok ? "Log file sent" : "Log file unavailable");
+        return;
+    }
     if (qData == "dash_back") {
         sendDashboardMainMenu(chatID, msgID);
+        dashboardMsgID = msgID;
         bot.answerCallbackQuery(u.query().id());
+        return;
+    }
+    if (qData == "dl_svg_day" || qData == "dl_svg_week") {
+        sendSvgGraph(chatID);
+        bot.answerCallbackQuery(u.query().id(), "SVG sent");
         return;
     }
     
@@ -160,6 +187,7 @@ void GreenhouseTelegramBot::handleQuery(fb::Update& u) {
 
 void GreenhouseTelegramBot::sendDashboardMainMenu(fb::ID chatID, uint32_t editMsgID) {
     String txt = "<b>GH Live Dashboard</b>\n\nChoose an action below:";
+    dashboardLiveView = false;
     
     fb::InlineMenu menu("[Controls];[Set Points];[Display]\n"
                         "[Download Logs];[SVG Plot]", 
@@ -177,11 +205,13 @@ void GreenhouseTelegramBot::sendDashboardMainMenu(fb::ID chatID, uint32_t editMs
         msg.mode = fb::Message::Mode::HTML;
         msg.setInlineMenu(menu);
         bot.editText(msg);
+        dashboardMsgID = editMsgID;
     }
 }
 
 void GreenhouseTelegramBot::sendControlsMenu(fb::ID chatID, uint32_t editMsgID) {
     String txt = "<b>Manual Equipment Override</b>";
+    dashboardLiveView = false;
     fb::InlineMenu menu("[Fan ON];[Fan OFF]\n"
                         "[Irrigation ON];[Irrigation OFF]\n"
                         "[Sides UP];[Sides DOWN]\n"
@@ -199,6 +229,7 @@ void GreenhouseTelegramBot::sendControlsMenu(fb::ID chatID, uint32_t editMsgID) 
 
 void GreenhouseTelegramBot::sendSvgMenu(fb::ID chatID, uint32_t editMsgID) {
     String txt = "<b>Generate High Def SVG</b>";
+    dashboardLiveView = false;
     fb::InlineMenu menu("Download Day\nDownload Week\n🔙 Back", "dl_svg_day;dl_svg_week;dash_back");
     fb::TextEdit msg(txt, editMsgID, chatID);
     msg.mode = fb::Message::Mode::HTML;
@@ -209,6 +240,7 @@ void GreenhouseTelegramBot::sendSvgMenu(fb::ID chatID, uint32_t editMsgID) {
 
 void GreenhouseTelegramBot::sendConfigMainMenu(fb::ID chatID, uint32_t editMsgID) {
     String txt = "<b>⚙️ Interactive Configuration</b>\nSelect a parameter to adjust:";
+    dashboardLiveView = false;
     String lbls = "";
     String cbs = ""; 
     
@@ -242,6 +274,7 @@ void GreenhouseTelegramBot::sendConfigMainMenu(fb::ID chatID, uint32_t editMsgID
 void GreenhouseTelegramBot::sendConfigEditMenu(fb::ID chatID, uint32_t msgID, int paramIndex) {
     if (paramIndex < 0 || paramIndex >= numSettings) return;
     SettingsParameter& p = settings[paramIndex];
+    dashboardLiveView = false;
 
     String txt = "<b>" + p.icon + " Editing " + p.name + "</b>\nCurrent Value: <code>" + String(*(p.valueRef), 1) + p.unit + "</code>";
     
@@ -392,6 +425,30 @@ uint32_t GreenhouseTelegramBot::sendUnicodeGraph(fb::ID chatID, uint32_t editMsg
         bot.editText(msg);
         return editMsgID;
     }
+}
+
+bool GreenhouseTelegramBot::sendLogFile(fb::ID chatID) {
+    ::File logFile = SD.open(logFilePath.c_str(), FILE_READ);
+    if (!logFile) {
+        fb::Message msg("Log file not found on SD: " + logFilePath, chatID);
+        bot.sendMessage(msg);
+        return false;
+    }
+
+    fb::File file(logFilePath, fb::File::Type::document, logFile);
+    file.chatID = chatID;
+    file.caption = "Greenhouse log export";
+
+    fb::Result result = bot.sendFile(file, true);
+    logFile.close();
+
+    if (result.isError()) {
+        fb::Message msg("Failed to send log file: " + String(result.getError().c_str()), chatID);
+        bot.sendMessage(msg);
+        return false;
+    }
+
+    return true;
 }
 
 void GreenhouseTelegramBot::sendSvgGraph(fb::ID chatID) {

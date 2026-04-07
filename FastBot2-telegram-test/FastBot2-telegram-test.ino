@@ -38,85 +38,113 @@ struct EventHistory {
     EventReading readings[10];
 };
 
-SensorHistory temperatureHistory{
-    "Temperature",
-    "°C",
-    "#ff4d4d", // red
+struct LogEntry {
+    DateTime timestamp;
+    float grnhouseTemp;
+    float grnhouseHum;
+    float ambientTemp;
+    float ambientHum;
+    bool motorUp;
+};
+
+const char* SENSOR_LOG_PATH = "/sensor_data.txt";
+const char* SENSOR_SVG_PATH = "/sensor_plot.svg";
+
+SensorHistory grnhouseTempHistory{
+    "Green House Temperature",
+    "°F",
+    "#ff4d4d",
     10,
     {
-        {DateTime(2024, 6, 1, 12, 0), 22.5},
-        {DateTime(2024, 6, 1, 13, 0), 23.0},
-        {DateTime(2024, 6, 1, 14, 0), 23.8},
-        {DateTime(2024, 6, 1, 15, 0), 24.2},
-        {DateTime(2024, 6, 1, 16, 0), 24.5},
-        {DateTime(2024, 6, 1, 17, 0), 24.7},
-        {DateTime(2024, 6, 1, 18, 0), 24.3},
-        {DateTime(2024, 6, 1, 19, 0), 23.9},
-        {DateTime(2024, 6, 1, 20, 0), 23.2},
-        {DateTime(2024, 6, 1, 21, 0), 22.8}
+        {DateTime(2026, 4, 6, 8, 0), 74.2},
+        {DateTime(2026, 4, 6, 8, 30), 75.0},
+        {DateTime(2026, 4, 6, 9, 0), 76.4},
+        {DateTime(2026, 4, 6, 9, 30), 78.1},
+        {DateTime(2026, 4, 6, 10, 0), 80.0},
+        {DateTime(2026, 4, 6, 10, 30), 81.8},
+        {DateTime(2026, 4, 6, 11, 0), 83.2},
+        {DateTime(2026, 4, 6, 11, 30), 84.5},
+        {DateTime(2026, 4, 6, 12, 0), 85.1},
+        {DateTime(2026, 4, 6, 12, 30), 84.0}
     }
 };
 
-SensorHistory humidityHistory{
-    "Humidity",
+SensorHistory grnhouseHumHistory{
+    "Green House Humidity",
     "%",
-    "#007bff", // blue
+    "#007bff",
     10,
     {
-        {DateTime(2024, 6, 1, 12, 0), 55.5},
-        {DateTime(2024, 6, 1, 13, 0), 56.0},
-        {DateTime(2024, 6, 1, 14, 0), 54.8},
-        {DateTime(2024, 6, 1, 15, 0), 53.2},
-        {DateTime(2024, 6, 1, 16, 0), 51.5},
-        {DateTime(2024, 6, 1, 17, 0), 49.7},
-        {DateTime(2024, 6, 1, 18, 0), 50.3},
-        {DateTime(2024, 6, 1, 19, 0), 52.9},
-        {DateTime(2024, 6, 1, 20, 0), 54.2},
-        {DateTime(2024, 6, 1, 21, 0), 56.8}
+        {DateTime(2026, 4, 6, 8, 0), 68.0},
+        {DateTime(2026, 4, 6, 8, 30), 67.2},
+        {DateTime(2026, 4, 6, 9, 0), 66.4},
+        {DateTime(2026, 4, 6, 9, 30), 65.0},
+        {DateTime(2026, 4, 6, 10, 0), 63.8},
+        {DateTime(2026, 4, 6, 10, 30), 62.1},
+        {DateTime(2026, 4, 6, 11, 0), 60.7},
+        {DateTime(2026, 4, 6, 11, 30), 59.5},
+        {DateTime(2026, 4, 6, 12, 0), 58.8},
+        {DateTime(2026, 4, 6, 12, 30), 60.2}
     }
 };
 
-EventHistory fanHistory{
-    "Exhaust Fan",
-    "🟩", // On
-    "  ", // Off
-    "ON", // onStr
-    "OFF", // offStr
-    "#32cd32", // color (lime green)
+SensorHistory ambientTempHistory{
+    "Ambient Temperature",
+    "°F",
+    "#ffb54d",
     10,
     {
-        {DateTime(2024, 6, 1, 12, 0), false},
-        {DateTime(2024, 6, 1, 13, 0), false},
-        {DateTime(2024, 6, 1, 14, 0), true},
-        {DateTime(2024, 6, 1, 15, 0), true},
-        {DateTime(2024, 6, 1, 16, 0), true},
-        {DateTime(2024, 6, 1, 17, 0), false},
-        {DateTime(2024, 6, 1, 18, 0), false},
-        {DateTime(2024, 6, 1, 19, 0), false},
-        {DateTime(2024, 6, 1, 20, 0), false},
-        {DateTime(2024, 6, 1, 21, 0), false}
+        {DateTime(2026, 4, 6, 8, 0), 58.4},
+        {DateTime(2026, 4, 6, 8, 30), 59.2},
+        {DateTime(2026, 4, 6, 9, 0), 60.1},
+        {DateTime(2026, 4, 6, 9, 30), 61.5},
+        {DateTime(2026, 4, 6, 10, 0), 62.8},
+        {DateTime(2026, 4, 6, 10, 30), 64.0},
+        {DateTime(2026, 4, 6, 11, 0), 65.2},
+        {DateTime(2026, 4, 6, 11, 30), 66.1},
+        {DateTime(2026, 4, 6, 12, 0), 67.0},
+        {DateTime(2026, 4, 6, 12, 30), 67.4}
+    }
+};
+
+SensorHistory ambientHumHistory{
+    "Ambient Humidity",
+    "%",
+    "#9d00ff",
+    10,
+    {
+        {DateTime(2026, 4, 6, 8, 0), 82.0},
+        {DateTime(2026, 4, 6, 8, 30), 81.2},
+        {DateTime(2026, 4, 6, 9, 0), 80.8},
+        {DateTime(2026, 4, 6, 9, 30), 79.4},
+        {DateTime(2026, 4, 6, 10, 0), 78.0},
+        {DateTime(2026, 4, 6, 10, 30), 76.8},
+        {DateTime(2026, 4, 6, 11, 0), 75.4},
+        {DateTime(2026, 4, 6, 11, 30), 74.6},
+        {DateTime(2026, 4, 6, 12, 0), 73.8},
+        {DateTime(2026, 4, 6, 12, 30), 73.0}
     }
 };
 
 EventHistory sidesHistory{
     "Roller Sides",
-    "🟧", // On (rolled up / open)
-    "  ", // Off (rolled down / closed)
-    "UP", // onStr
-    "DOWN", // offStr
-    "#ffa500", // color (orange)
+    "🟧",
+    "  ",
+    "UP",
+    "DOWN",
+    "#ffa500",
     10,
     {
-        {DateTime(2024, 6, 1, 12, 0), false},
-        {DateTime(2024, 6, 1, 13, 0), true},
-        {DateTime(2024, 6, 1, 14, 0), true},
-        {DateTime(2024, 6, 1, 15, 0), true},
-        {DateTime(2024, 6, 1, 16, 0), true},
-        {DateTime(2024, 6, 1, 17, 0), true},
-        {DateTime(2024, 6, 1, 18, 0), true},
-        {DateTime(2024, 6, 1, 19, 0), false},
-        {DateTime(2024, 6, 1, 20, 0), false},
-        {DateTime(2024, 6, 1, 21, 0), false}
+        {DateTime(2026, 4, 6, 8, 0), false},
+        {DateTime(2026, 4, 6, 8, 30), false},
+        {DateTime(2026, 4, 6, 9, 0), false},
+        {DateTime(2026, 4, 6, 9, 30), true},
+        {DateTime(2026, 4, 6, 10, 0), true},
+        {DateTime(2026, 4, 6, 10, 30), true},
+        {DateTime(2026, 4, 6, 11, 0), true},
+        {DateTime(2026, 4, 6, 11, 30), true},
+        {DateTime(2026, 4, 6, 12, 0), false},
+        {DateTime(2026, 4, 6, 12, 30), false}
     }
 };
 
@@ -138,7 +166,7 @@ struct SettingsParameter {
 };
 
 SettingsParameter settings[] = {
-    {"🌡️", "Target Temp", &targetTemp, "°C"},
+    {"🌡️", "Target Temp", &targetTemp, "°F"},
     {"💧", "Target Moist", &targetMoisture, "%"}
 };
 const int NUM_BOT_PARAMS = sizeof(settings) / sizeof(settings[0]);
@@ -193,6 +221,314 @@ String formatTime(DateTime dt) {
     char buf[6];
     snprintf(buf, sizeof(buf), "%02d:%02d", dt.hour(), dt.minute());
     return String(buf);
+}
+
+bool parseSensorLogLine(const String& rawLine, LogEntry& entry) {
+    String line = rawLine;
+    line.trim();
+    if (!line.length()) return false;
+
+    int year, month, day, hour, minute, second, motorUpInt;
+    float grnhouseTemp, grnhouseHum, ambientTemp, ambientHum;
+
+    int parsed = sscanf(
+        line.c_str(),
+        "%d-%d-%d,%d:%d:%d,%f,%f,%f,%f,%d",
+        &year,
+        &month,
+        &day,
+        &hour,
+        &minute,
+        &second,
+        &grnhouseTemp,
+        &grnhouseHum,
+        &ambientTemp,
+        &ambientHum,
+        &motorUpInt);
+
+    if (parsed != 11) return false;
+
+    entry.timestamp = DateTime(year, month, day, hour, minute, second);
+    entry.grnhouseTemp = grnhouseTemp;
+    entry.grnhouseHum = grnhouseHum;
+    entry.ambientTemp = ambientTemp;
+    entry.ambientHum = ambientHum;
+    entry.motorUp = motorUpInt != 0;
+    return true;
+}
+
+float getLogSeriesValue(const LogEntry& entry, int seriesIndex) {
+    switch (seriesIndex) {
+        case 0: return entry.grnhouseTemp;
+        case 1: return entry.ambientTemp;
+        case 2: return entry.grnhouseHum;
+        case 3: return entry.ambientHum;
+        default: return 0.0;
+    }
+}
+
+const char* getLogSeriesName(int seriesIndex) {
+    switch (seriesIndex) {
+        case 0: return "Green House Temperature";
+        case 1: return "Ambient Temperature";
+        case 2: return "Green House Humidity";
+        case 3: return "Ambient Humidity";
+        default: return "Series";
+    }
+}
+
+const char* getLogSeriesColor(int seriesIndex) {
+    switch (seriesIndex) {
+        case 0: return "#ff4d4d";
+        case 1: return "#ffb54d";
+        case 2: return "#007bff";
+        case 3: return "#9d00ff";
+        default: return "#000000";
+    }
+}
+
+bool sendSvgGraphFromLog(fb::ID chatID, const char* logPath = SENSOR_LOG_PATH, const char* svgPath = SENSOR_SVG_PATH) {
+    File input = FFat.open(logPath, "r");
+    if (!input) {
+        bot.sendMessage(fb::Message("❌ Error: sensor log file not found.", chatID));
+        return false;
+    }
+
+    int count = 0;
+    float minVal = 0.0;
+    float maxVal = 0.0;
+    bool hasValue = false;
+
+    while (input.available()) {
+        LogEntry entry;
+        if (!parseSensorLogLine(input.readStringUntil('\n'), entry)) continue;
+
+        for (int seriesIndex = 0; seriesIndex < 4; seriesIndex++) {
+            float value = getLogSeriesValue(entry, seriesIndex);
+            if (!hasValue) {
+                minVal = value;
+                maxVal = value;
+                hasValue = true;
+            } else {
+                if (value < minVal) minVal = value;
+                if (value > maxVal) maxVal = value;
+            }
+        }
+        count++;
+    }
+    input.close();
+
+    if (!hasValue || count == 0) {
+        bot.sendMessage(fb::Message("❌ Error: sensor log file is empty or invalid.", chatID));
+        return false;
+    }
+    if (maxVal == minVal) {
+        maxVal += 1.0;
+        minVal -= 1.0;
+    }
+
+    int pointSpacing = 60;
+    if (count > 48) pointSpacing = 28;
+    if (count > 96) pointSpacing = 16;
+
+    int numEvents = 1;
+    int eventRowHeight = 15;
+    int marginYBottomBase = 30;
+    int marginYBottom = marginYBottomBase + (numEvents * eventRowHeight);
+    int marginX = 100;
+    int width = (count * pointSpacing) + marginX + 20;
+    int height = 265 + (numEvents * eventRowHeight);
+    int marginYTop = 50;
+    int graphHeight = height - marginYTop - marginYBottom;
+    int labelStep = count / 8;
+    if (labelStep < 1) labelStep = 1;
+    int valueLabelStep = (pointSpacing < 40) ? 2 : 1;
+    int gridStart = int(floor(minVal / 5.0f) * 5.0f);
+    int gridEnd = int(ceil(maxVal / 5.0f) * 5.0f);
+
+    FFat.remove(svgPath);
+    File svg = FFat.open(svgPath, FILE_WRITE);
+    if (!svg) {
+        bot.sendMessage(fb::Message("❌ Error: could not create SVG output file.", chatID));
+        return false;
+    }
+
+    svg.print("<svg viewBox=\"0 0 ");
+    svg.print(width);
+    svg.print(" ");
+    svg.print(height);
+    svg.println("\" xmlns=\"http://www.w3.org/2000/svg\" style=\"background-color:#ffffff; font-family:sans-serif;\">");
+    svg.println("  <style>");
+    svg.println("    .axis { font-size: 10px; fill: #666; }");
+    svg.println("    .grid { stroke: #e6e6e6; stroke-width: 1; }");
+    svg.println("    .title { font-size: 14px; font-weight: bold; fill: #333; }");
+    svg.println("    .legend { font-size: 10px; font-weight: bold; }");
+    svg.println("    .val { font-size: 10px; font-weight: bold; }");
+    svg.println("  </style>");
+    svg.print("  <text x=\"");
+    svg.print(width / 2);
+    svg.println("\" y=\"20\" class=\"title\" text-anchor=\"middle\">Greenhouse Log History</text>");
+    svg.print("  <line x1=\"");
+    svg.print(marginX);
+    svg.print("\" y1=\"");
+    svg.print(marginYTop);
+    svg.print("\" x2=\"");
+    svg.print(marginX);
+    svg.print("\" y2=\"");
+    svg.print(height - marginYBottom);
+    svg.println("\" stroke=\"#ccc\" stroke-width=\"1.5\" />");
+
+    for (int gridValue = gridStart; gridValue <= gridEnd; gridValue += 5) {
+        int y = height - marginYBottom - int(((gridValue - minVal) / (maxVal - minVal)) * graphHeight);
+        if (y < marginYTop || y > (height - marginYBottom)) continue;
+
+        svg.print("  <line x1=\"");
+        svg.print(marginX);
+        svg.print("\" y1=\"");
+        svg.print(y);
+        svg.print("\" x2=\"");
+        svg.print(width - 20);
+        svg.print("\" y2=\"");
+        svg.print(y);
+        svg.println("\" class=\"grid\" />");
+
+        svg.print("  <text x=\"");
+        svg.print(marginX - 5);
+        svg.print("\" y=\"");
+        svg.print(y + 4);
+        svg.print("\" class=\"axis\" text-anchor=\"end\">");
+        svg.print(gridValue);
+        svg.println("</text>");
+    }
+
+    svg.print("  <line x1=\"");
+    svg.print(marginX);
+    svg.print("\" y1=\"");
+    svg.print(height - marginYBottom);
+    svg.print("\" x2=\"");
+    svg.print(width - 20);
+    svg.print("\" y2=\"");
+    svg.print(height - marginYBottom);
+    svg.println("\" stroke=\"#ccc\" stroke-width=\"1.5\" />");
+    input = FFat.open(logPath, "r");
+    int index = 0;
+    while (input.available()) {
+        LogEntry entry;
+        if (!parseSensorLogLine(input.readStringUntil('\n'), entry)) continue;
+
+        int x = marginX + (index * pointSpacing) + (pointSpacing / 2);
+        if ((index % labelStep) == 0 || index == count - 1) {
+            svg.print("  <text x=\"");
+            svg.print(x);
+            svg.print("\" y=\"");
+            svg.print(height - marginYBottom + 16);
+            svg.print("\" class=\"axis\" text-anchor=\"middle\">");
+            svg.print(formatTime(entry.timestamp));
+            svg.println("</text>");
+        }
+
+        if (entry.motorUp) {
+            svg.print("  <rect x=\"");
+            svg.print(marginX + (index * pointSpacing));
+            svg.print("\" y=\"");
+            svg.print(height - marginYBottom + marginYBottomBase - 8);
+            svg.print("\" width=\"");
+            svg.print(pointSpacing);
+            svg.println("\" height=\"10\" fill=\"#ffa500\" opacity=\"0.6\" />");
+        }
+
+        index++;
+    }
+    input.close();
+
+    svg.print("  <text x=\"");
+    svg.print(marginX - 5);
+    svg.print("\" y=\"");
+    svg.print(height - marginYBottom + marginYBottomBase);
+    svg.println("\" class=\"axis\" text-anchor=\"end\">Roller Sides</text>");
+
+    for (int seriesIndex = 0; seriesIndex < 4; seriesIndex++) {
+        svg.print("  <text x=\"");
+        svg.print(marginX + 10 + (seriesIndex * 110));
+        svg.print("\" y=\"40\" class=\"legend\" fill=\"");
+        svg.print(getLogSeriesColor(seriesIndex));
+        svg.print("\">");
+        svg.print(getLogSeriesName(seriesIndex));
+        svg.println("</text>");
+
+        svg.print("  <polyline fill=\"none\" stroke=\"");
+        svg.print(getLogSeriesColor(seriesIndex));
+        svg.println("\" stroke-width=\"2\" points=\"");
+
+        input = FFat.open(logPath, "r");
+        index = 0;
+        while (input.available()) {
+            LogEntry entry;
+            if (!parseSensorLogLine(input.readStringUntil('\n'), entry)) continue;
+
+            int x = marginX + (index * pointSpacing) + (pointSpacing / 2);
+            int y = height - marginYBottom - int(((getLogSeriesValue(entry, seriesIndex) - minVal) / (maxVal - minVal)) * graphHeight);
+            svg.print("    ");
+            svg.print(x);
+            svg.print(",");
+            svg.print(y);
+            svg.println();
+            index++;
+        }
+        input.close();
+        svg.println("  \" />");
+
+        input = FFat.open(logPath, "r");
+        index = 0;
+        while (input.available()) {
+            LogEntry entry;
+            if (!parseSensorLogLine(input.readStringUntil('\n'), entry)) continue;
+
+            int x = marginX + (index * pointSpacing) + (pointSpacing / 2);
+            float value = getLogSeriesValue(entry, seriesIndex);
+            int y = height - marginYBottom - int(((value - minVal) / (maxVal - minVal)) * graphHeight);
+
+            svg.print("  <circle cx=\"");
+            svg.print(x);
+            svg.print("\" cy=\"");
+            svg.print(y);
+            svg.print("\" r=\"3.5\" fill=\"");
+            svg.print(getLogSeriesColor(seriesIndex));
+            svg.println("\" />");
+
+            if ((index % valueLabelStep) == 0 || index == count - 1) {
+                int yOffset = (seriesIndex % 2 == 0) ? -8 : 14;
+                svg.print("  <text x=\"");
+                svg.print(x);
+                svg.print("\" y=\"");
+                svg.print(y + yOffset);
+                svg.print("\" class=\"val\" fill=\"");
+                svg.print(getLogSeriesColor(seriesIndex));
+                svg.print("\" text-anchor=\"middle\">");
+                svg.print(String(value, 1));
+                svg.println("</text>");
+            }
+
+            index++;
+        }
+        input.close();
+    }
+
+    svg.println("</svg>");
+    svg.close();
+
+    File svgFile = FFat.open(svgPath, "r");
+    if (!svgFile) {
+        bot.sendMessage(fb::Message("❌ Error: could not reopen generated SVG file.", chatID));
+        return false;
+    }
+
+    fb::File fileAttachment("sensor_plot.svg", fb::File::Type::document, svgFile);
+    fileAttachment.caption = "Sensor Value Trend from sensor_data.txt";
+    fileAttachment.chatID = chatID;
+    bot.sendFile(fileAttachment, true);
+    svgFile.close();
+    return true;
 }
 
 // 1. Unicode Graph Function (Sparkline)
@@ -614,9 +950,9 @@ void updateh(fb::Update& u) {
             bot.sendMessage(msg);
 
         } else if (text == "/unicode" || text == "Unicode Graph") {
-            SensorHistory histories[] = {temperatureHistory, humidityHistory};
-            EventHistory events[] = {fanHistory, sidesHistory};
-            sendUnicodeGraph(u.message().chat().id(), histories, 2, events, 2);
+            SensorHistory histories[] = {grnhouseTempHistory, ambientTempHistory, grnhouseHumHistory, ambientHumHistory};
+            EventHistory events[] = {sidesHistory};
+            sendUnicodeGraph(u.message().chat().id(), histories, 4, events, 1);
 
         } else if (text == "/dashboard" || text == "Live Dashboard") {
             dashboardChatID = u.message().chat().id();
@@ -626,12 +962,10 @@ void updateh(fb::Update& u) {
             dashboardTimer = millis() - 5000; // Trigger almost immediately
 
         } else if (text == "/svg" || text == "SVG Graph") {
-            SensorHistory histories[] = {temperatureHistory, humidityHistory};
-            EventHistory events[] = {fanHistory, sidesHistory};
-            sendSvgGraph(u.message().chat().id(), histories, 2, events, 2);
+            sendSvgGraphFromLog(u.message().chat().id());
             
         } else if (text == "/download" || text == "Download Log") {
-            File logFile = FFat.open("/sensor_data.txt", "r");
+            File logFile = FFat.open(SENSOR_LOG_PATH, "r");
             if (!logFile) {
                 fb::Message msg("❌ Error: Log file not found on device.", u.message().chat().id());
                 bot.sendMessage(msg);
@@ -706,7 +1040,7 @@ void setup()
     cmds.addCommand("color", "Choose an RGB LED color");
     cmds.addCommand("unicode", "Show a text-based sparkline graph");
     cmds.addCommand("dashboard", "Show a live-updating text graph");
-    cmds.addCommand("svg", "Show a high-quality SVG graph");
+    cmds.addCommand("svg", "Show a log-backed SVG graph");
     cmds.addCommand("download", "Download sensor log file");
     bot.setMyCommands(cmds);
 }
@@ -718,15 +1052,16 @@ void loop()
     // Update the live dashboard every 5 seconds if active
     if (dashboardActive && (millis() - dashboardTimer >= 5000)) {
         dashboardTimer = millis();
-        tickMockData(temperatureHistory);
-        tickMockData(humidityHistory);
-        tickMockEventData(fanHistory);
+        tickMockData(grnhouseTempHistory);
+        tickMockData(ambientTempHistory);
+        tickMockData(grnhouseHumHistory);
+        tickMockData(ambientHumHistory);
         tickMockEventData(sidesHistory);
         
-        SensorHistory histories[] = {temperatureHistory, humidityHistory};
-        EventHistory events[] = {fanHistory, sidesHistory};
+        SensorHistory histories[] = {grnhouseTempHistory, ambientTempHistory, grnhouseHumHistory, ambientHumHistory};
+        EventHistory events[] = {sidesHistory};
         
         // editMsgID is passed here so it updates the existing message instead of sending new ones
-        sendUnicodeGraph(dashboardChatID, histories, 2, events, 2, dashboardMsgID);
+        sendUnicodeGraph(dashboardChatID, histories, 4, events, 1, dashboardMsgID);
     }
 }

@@ -78,85 +78,60 @@ unsigned long runTime;
 unsigned long startTime1 = 0;
 
 // variables for the timer on the function to read the sensors
-unsigned long readInterval = 3000;
+constexpr unsigned long readInterval = 3000UL;
 unsigned long readTime;
 unsigned long startTime2 = 0;
+
+// variables for the timer on the telegram dashboard history
+unsigned long historyTime;
+unsigned long startTime3 = 0;
 
 #include <FFat.h>
 #include "GreenhouseTelegram.h"
 #include "secrets.h"
 #include <WiFi.h>
 
-GreenhouseTelegramBot* telBot;
+GreenhouseTelegramBot *telBot;
 
-// Telegram Sensor Histories (allocate size dynamically based on your sample rate)
-const int localHistorySize = 10; // Number of historical readings to keep for the bot (adjust as needed)
-SensorReading tempReadings[localHistorySize];
-SensorReading humReadings[localHistorySize];
+// Telegram Sensor Histories
+// Storing every 3 seconds over 4 hours requires ~350KB of RAM which crashes the ESP32.
+// Let's store one data point every 5 minutes (300,000 ms) to keep the charts manageable and save RAM.
+constexpr unsigned long historyInterval = 5UL * 60UL * 1000UL;                      // 5 minutes
+constexpr size_t localHistorySize = (4UL * 60UL * 60UL * 1000UL) / historyInterval; // 48 points
 
-SensorHistory botTempHistory = {"Temperature", "°F", "#ff4d4d", localHistorySize, tempReadings};
-SensorHistory botHumHistory = {"Humidity", "%", "#007bff", localHistorySize, humReadings};
-SensorHistory activeSensors[] = {botTempHistory, botHumHistory};
+SensorReading grnhouseTempReadings[localHistorySize];
+SensorReading grnhouseHumReadings[localHistorySize];
+SensorReading ambientTempReadings[localHistorySize];
+SensorReading ambientHumReadings[localHistorySize];
+SensorReading insolationReadings[localHistorySize];
+SensorReading soilMoistureReadings[localHistorySize];
 
-EventReading fanReadings[10];
-EventReading sidesReadings[10];
+SensorHistory grnhouseTempHistory = {"Green House Temperature", "°F", "#ff4d4d", localHistorySize, grnhouseTempReadings};
+SensorHistory grnhouseHumHistory = {"Green House Humidity", "%", "#007bff", localHistorySize, grnhouseHumReadings};
+SensorHistory ambientTempHistory = {"Ambient Temperature", "°F", "#ffb54d", localHistorySize, ambientTempReadings};
+SensorHistory ambientHumHistory = {"Ambient Humidity", "%", "#9d00ff", localHistorySize, ambientHumReadings};
+SensorHistory insolationHistory = {"Insolation", "%", "#ffff4d", localHistorySize, insolationReadings};
+SensorHistory soilMoistureHistory = {"Soil Moisture", "%", "#4dff4d", localHistorySize, soilMoistureReadings};
 
-EventHistory botFanHistory = {"Exhaust Fan", "🟩", "  ", "ON", "OFF", "#32cd32", localHistorySize, fanReadings};
-EventHistory botSidesHistory = {"Roller Sides", "🟧", "  ", "UP", "DOWN", "#ffa500", localHistorySize, sidesReadings};
-EventHistory activeEvents[] = {botFanHistory, botSidesHistory};
+SensorHistory activeSensors[] = {grnhouseTempHistory, ambientTempHistory, grnhouseHumHistory, ambientHumHistory};
+
+EventReading fanEvents[localHistorySize];
+EventReading sidesEvents[localHistorySize];
+EventReading irrigationEvents[localHistorySize];
+
+EventHistory botFanHistory = {"Exhaust Fan", "🟩", "  ", "ON", "OFF", "#32cd32", localHistorySize, fanEvents};
+EventHistory botSidesHistory = {"Roller Sides", "🟧", "  ", "UP", "DOWN", "#ffa500", localHistorySize, sidesEvents};
+EventHistory IrrigationHistory = {"Irrigation", "💧", "  ", "ON", "OFF", "#1e90ff", localHistorySize, irrigationEvents};
+EventHistory activeEvents[] = {botFanHistory, botSidesHistory, IrrigationHistory};
 
 SettingsParameter botSettings[] = {
     {"🌡️", "Target Temp 1", &grnhouseTargetTemp1, "°F"},
     {"🌡️", "Target Temp 2", &grnhouseTargetTemp2, "°F"},
     {"📈", "Temp Delta", &grnhouseTempDelta, "°F"},
-    {"💧", "Target Moist", (float*)&soilTargetMoisture, "%"}, // Need cast safely or modify types
-    {"📉", "Moist Delta", (float*)&soilMoistureDelta, "%"}
-};
+    {"💧", "Target Moisture", (float *)&soilTargetMoisture, "%"}, // Need cast safely or modify types
+    {"📉", "Moisture Delta", (float *)&soilMoistureDelta, "%"}};
 
 // ========================================================= END DECLARATIONS ===============================================
-
-// Callbacks for Telegram manual overrides
-void onFanTelegramTrigger(bool state) {
-    fanOn = state;
-    digitalWrite(relayZeroPin, state ? HIGH : LOW);
-}
-
-void onIrrigationTelegramTrigger(bool state) {
-    waterOn = state;
-    digitalWrite(relayFourPin, state ? HIGH : LOW);
-}
-
-void onSidesTelegramTrigger(bool state) {
-    motorUp = state;
-    digitalWrite(relayTwoPin, state ? HIGH : LOW); // Mock logic for side motors
-}
-
-void greenhouse_telegram_bot_setup() {
-    // Start WiFi
-    Serial.print("Connecting to WiFi ");
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
-    }
-    Serial.println("\nWiFi connected!");
-
-    // Setup Telegram Bot
-    telBot = new GreenhouseTelegramBot(BOT_TOKEN, MODE_DASHBOARD);
-    telBot->setSensorHistories(activeSensors, 2);
-    telBot->setEventHistories(activeEvents, 2);
-    telBot->setSettings(botSettings, 5);
-    
-    telBot->setControlCallbacks(onFanTelegramTrigger, onIrrigationTelegramTrigger, onSidesTelegramTrigger);
-    
-    telBot->setup();
-}
-
-void bot_loop() {
-    if (telBot) {
-        telBot->tick();
-    }
-}
 
 //==============================================================BEGIN SET UP======================================================================
 void setup()
@@ -164,7 +139,7 @@ void setup()
 
   Serial.begin(9600);
 
-    // Enable Wi-Fi routing here before setting up Telegram
+  // Enable Wi-Fi routing here before setting up Telegram
   greenhouse_telegram_bot_setup();
 
   // wait for Serial Monitor to connect. Needed for native USB port boards only:
@@ -217,6 +192,14 @@ void setup()
   digitalWrite(relayThreePin, LOW); // turn off relays that control roll-up motor
   digitalWrite(relayFourPin, LOW);  // turn off relay that controls irrigation solenoid
 
+  // wait for DHT sensors to stabilize and then do initial reading to prepopulate history arrays so graphs are instantly populated
+  delay(2000);
+  readSensors();
+  DateTime bootTime = rtc.now();
+  for (size_t i = 0; i < localHistorySize; i++)
+  {
+    updateHistoryArrays(bootTime);
+  }
 }
 
 //==============================================================END SET UP=======================================================================
@@ -225,7 +208,6 @@ void setup()
 
 void loop()
 {
-  readInterval = (1000 * 3); // the read interval in milliseconds for the readSensors function which gets the temperatures and humidities
   readTime = (millis() - startTime2);
   if (readTime > readInterval)
   {
@@ -247,7 +229,19 @@ void loop()
     startTime1 = millis();
   }
 
-  bot_loop(); // Handles incoming queries/messages for telegram 
+  historyTime = (millis() - startTime3);
+  if (historyTime > historyInterval)
+  {
+    DateTime now = rtc.now();
+    updateHistoryArrays(now);
+    if (telBot)
+    {
+      telBot->refreshDashboard();
+    }
+    startTime3 = millis();
+  }
+
+  bot_loop(); // Handles incoming queries/messages for telegram
 
   delay(100);
 }
@@ -525,5 +519,93 @@ void logicAndControl()
 }
 
 //====================================================================END LOGIC AND CONTROL SUBROUTINE================================================
+
+//==============================================================BEGIN TELEGRAM LOGIC AND CALLBACKS===================================================
+
+// Callbacks for Telegram manual overrides
+void onFanTelegramTrigger(bool state)
+{
+  fanOn = state;
+  digitalWrite(relayZeroPin, state ? HIGH : LOW);
+}
+
+void onIrrigationTelegramTrigger(bool state)
+{
+  waterOn = state;
+  digitalWrite(relayFourPin, state ? HIGH : LOW);
+}
+
+void onSidesTelegramTrigger(bool state)
+{
+  motorUp = state;
+  digitalWrite(relayTwoPin, state ? HIGH : LOW);
+  digitalWrite(relayThreePin, state ? LOW : HIGH);
+  delay(5000);
+  digitalWrite(relayTwoPin, LOW);
+  digitalWrite(relayThreePin, LOW);
+}
+
+void greenhouse_telegram_bot_setup()
+{
+  // Start WiFi
+  Serial.print("Connecting to WiFi ");
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi connected!");
+
+  // Setup Telegram Bot
+  telBot = new GreenhouseTelegramBot(BOT_TOKEN, MODE_DASHBOARD);
+  telBot->setLogFilePath("grnhs.txt");
+  telBot->setSensorHistories(activeSensors, sizeof(activeSensors) / sizeof(activeSensors[0]));
+  telBot->setEventHistories(activeEvents, sizeof(activeEvents) / sizeof(activeEvents[0]));
+  telBot->setSettings(botSettings, sizeof(botSettings) / sizeof(botSettings[0]));
+
+  telBot->setControlCallbacks(onFanTelegramTrigger, onIrrigationTelegramTrigger, onSidesTelegramTrigger);
+
+  telBot->setup();
+}
+
+void updateHistoryArrays(DateTime now)
+{
+  // Shift all readings down by 1 relative to index 0 (oldest).
+  for (size_t i = 1; i < localHistorySize; i++)
+  {
+    grnhouseTempReadings[i - 1] = grnhouseTempReadings[i];
+    grnhouseHumReadings[i - 1] = grnhouseHumReadings[i];
+    ambientTempReadings[i - 1] = ambientTempReadings[i];
+    ambientHumReadings[i - 1] = ambientHumReadings[i];
+    insolationReadings[i - 1] = insolationReadings[i];
+    soilMoistureReadings[i - 1] = soilMoistureReadings[i];
+
+    fanEvents[i - 1] = fanEvents[i];
+    sidesEvents[i - 1] = sidesEvents[i];
+    irrigationEvents[i - 1] = irrigationEvents[i];
+  }
+
+  // Insert new readings at the end (newest)
+  size_t last = localHistorySize - 1;
+  grnhouseTempReadings[last] = {now, grnhouseTemp};
+  grnhouseHumReadings[last] = {now, grnhouseHum};
+  ambientTempReadings[last] = {now, ambientTemp};
+  ambientHumReadings[last] = {now, ambientHum};
+  insolationReadings[last] = {now, (float)insolation};
+  soilMoistureReadings[last] = {now, (float)soilMoisture};
+
+  fanEvents[last] = {now, fanOn};
+  sidesEvents[last] = {now, motorUp};
+  irrigationEvents[last] = {now, waterOn};
+}
+
+void bot_loop()
+{
+  if (telBot)
+  {
+    telBot->tick();
+  }
+}
 
 //=====================================================================END OF PROGRAM==================================================================
