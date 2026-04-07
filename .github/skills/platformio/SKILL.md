@@ -45,6 +45,11 @@ Use this skill when the task involves PlatformIO commands (build, upload, test, 
   ~/.platformio/penv/bin/pio run -t upload -e <env> --upload-port /dev/cu.usbmodemXXXX
   ```
 
+- Monitor Serial Output (very helpful for catching boot loops):
+  ```bash
+  ~/.platformio/penv/bin/pio run -t monitor -e <env> --monitor-port /dev/cu.usbmodemXXXX
+  ```
+
 - Clean:
   ```bash
   ~/.platformio/penv/bin/pio run -t clean -e <env>

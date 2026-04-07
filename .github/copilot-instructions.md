@@ -13,12 +13,16 @@
 ## Project Structure And Workflow
 - **Main production sketch**: `arduino-greenhouse-controller/` remains the Arduino-IDE-friendly primary sketch folder.
 - **Experimental sketches**: Additional sketches live in their own top-level folders, each with a single `.ino` file and any local support files such as `secrets.h`.
-- **Current experimental folders**: `TelegramSerial-test/`, `FastBot2-telegram-test/`, `telegram-forwarder/`, and `lora-sender/`.
+- **Current experimental folders**: `TelegramSerial-test/`, `FastBot2-telegram-test/`, `telegram-forwarder/`, `lora-sender/`, `lora-sender-greenhouse/`, and `lora-telegram-forwarder-greenhouse/`.
 - **PlatformIO source switching**: Use `custom_src_dir = <folder-name>` in each environment and the shared `set_src_dir.py` script to point PlatformIO at the selected sketch folder.
 - **Keep Arduino compatibility**: Prefer one Arduino-style sketch per folder rather than converting experiments into shared `src/` trees unless there is a strong reason to do so.
 - **Secrets handling**: Keep credentials in per-sketch `secrets.h` files and rely on `*/secrets.h` in `.gitignore` so examples can stay public.
 
 ## Important Learnings
+- **Timekeeping without RTC hardware**: Use native ESP32 SNTP time sync via POSIX `<time.h>` and `uint32_t` Unix timestamps instead of relying on `RTClib` when no hardware RTC is present. This eliminates external dependencies and simplifies the codebase.
+- **WiFi and Telegram Initialization**: Ensure `WiFi.begin()` completes before initializing the Telegram Bot library to prevent boot loops and unhandled exceptions.
+- **Dynamic Telegram UI**: When building inline Telegram dashboards (e.g., `sendUnicodeGraph`), handle empty state conditions (like an empty `logBuffer`) by rendering a placeholder message rather than returning early to avoid blank UI responses on first load.
+- **Pointer-to-Member Syntax**: Leverage C++ Pointer-to-Member syntax to tie UI elements (`SettingsParameter`, `SensorMetadata`, `EventMetadata`) directly to struct offsets, creating a decoupled, generic UI architecture.
 - **RYLR status values**: `RYLR_LoRaAT::checkStatus()` returns `0` for success, positive values for device-reported errors, and `-1` for parse or timeout failures.
 - **RYLR receive model**: `checkMessage()` returns a parsed message object with `from_address`, `rssi`, `snr`, `data_len`, and `data` fields. Prefer using those fields rather than reparsing raw modem output.
 - **Arduino Nano ESP32 RGB LED**: Built-in RGB aliases are `LEDR`, `LEDG`, and `LEDB`, and they are active-low on this board.

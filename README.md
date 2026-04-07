@@ -9,6 +9,8 @@ This repository contains a greenhouse controller sketch plus several ESP32 exper
 - `FastBot2-telegram-test/`: ESP32 test sketch for the `FastBot2` library.
 - `telegram-forwarder/`: ESP32 sketch that receives LoRa packets and forwards them to Telegram.
 - `lora-sender/`: ESP32 sketch that sends dummy structured greenhouse data over a Reyax RYLR radio.
+- `lora-sender-greenhouse/`: Advanced sender that pairs with the full dashboard and executes remote commands over LoRa.
+- `lora-telegram-forwarder-greenhouse/`: Advanced forwarder acting as a man-in-the-middle gateway. It catches LoRa telemetry, logs it to PSRAM, and serves the full interactive Telegram Dashboard.
 - `set_src_dir.py`: shared PlatformIO pre-script that switches environments to the correct sketch folder.
 - `platformio.ini`: environment definitions for each sketch.
 

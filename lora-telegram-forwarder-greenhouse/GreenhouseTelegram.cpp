@@ -2,12 +2,15 @@
 
 GreenhouseTelegramBot::GreenhouseTelegramBot(const String& token, BotOperatingMode mode) 
     : bot(token), operatingMode(mode), targetChatID(0LL), dashboardLiveView(false), logFilePath("grnhs.txt"), dashboardMsgID(0), activeConfigIndex(-1), awaitValue(false),
-      logBuffer(nullptr), sensorMetadata(nullptr), numSensors(0), eventMetadata(nullptr), numEvents(0), settings(nullptr), numSettings(0) {}
+    logBuffer(nullptr), sensorMetadata(nullptr), numSensors(0), eventMetadata(nullptr), numEvents(0), settings(nullptr), numSettings(0),
+    deviceBootMillis(0), lastLoRaRxMillis(0), linkConnectedSinceMillis(0), lastRssi(0), lastSnr(0) {}
 
 void GreenhouseTelegramBot::begin(const char* ssid, const char* pass, 
                                   SensorMetadata* sensors, int numS,
                                   EventMetadata* events, int numE,
                                   SettingsParameter* params, int numP) {
+    deviceBootMillis = millis();
+
     // Initialize PSRAM log buffer
     if (psramInit()) {
         logBuffer = new RingBuffer(100000); // about 8 days if 5 mins per sample, actually 100k samples is 100k*5m=500k minutes = 347 days
@@ -37,6 +40,7 @@ void GreenhouseTelegramBot::begin(const char* ssid, const char* pass,
 
 void GreenhouseTelegramBot::setup() {
     bot.attachUpdate([this](fb::Update& u) { handleUpdate(u); });
+    bot.setPollMode(fb::Poll::Long, 60000);
 }
 
 void GreenhouseTelegramBot::tick() {
@@ -45,7 +49,18 @@ void GreenhouseTelegramBot::tick() {
 
 void GreenhouseTelegramBot::refreshDashboard() {
     if (dashboardLiveView && dashboardMsgID != 0) {
+        cachedDashboardBody = ""; // Invalidate cache so fresh data is rendered
         dashboardMsgID = sendUnicodeGraph(targetChatID, dashboardMsgID);
+    }
+}
+
+void GreenhouseTelegramBot::updateLinkMetrics(int rssi, int snr) {
+    bool wasConnected = isLinkConnected();
+    lastRssi = rssi;
+    lastSnr = snr;
+    lastLoRaRxMillis = millis();
+    if (!wasConnected || linkConnectedSinceMillis == 0) {
+        linkConnectedSinceMillis = lastLoRaRxMillis;
     }
 }
 
@@ -78,6 +93,64 @@ String GreenhouseTelegramBot::formatTime(DateTime dt) {
     return String(buf);
 }
 
+String GreenhouseTelegramBot::formatDuration(unsigned long elapsedMs) const {
+    unsigned long totalSeconds = elapsedMs / 1000;
+    unsigned long hours = totalSeconds / 3600;
+    unsigned long minutes = (totalSeconds % 3600) / 60;
+    unsigned long seconds = totalSeconds % 60;
+
+    char buf[20];
+    if (hours >= 100) {
+        snprintf(buf, sizeof(buf), "%luh %02lum", hours, minutes);
+    } else {
+        snprintf(buf, sizeof(buf), "%02lu:%02lu:%02lu", hours, minutes, seconds);
+    }
+    return String(buf);
+}
+
+bool GreenhouseTelegramBot::isLinkConnected() const {
+    if (lastLoRaRxMillis == 0) return false;
+    return (millis() - lastLoRaRxMillis) <= 45000;
+}
+
+const char* GreenhouseTelegramBot::getLinkQualityLabel() const {
+    if (!isLinkConnected()) return "No Signal";
+    if (lastRssi >= -80 && lastSnr >= 8) return "Excellent";
+    if (lastRssi >= -95 && lastSnr >= 4) return "Good     ";
+    if (lastRssi >= -110 && lastSnr >= 0) return "Fair    ";
+    return "Poor";
+}
+
+const char* GreenhouseTelegramBot::getLinkQualityBar() const {
+    if (!isLinkConnected()) return "[-----]";
+    if (lastRssi >= -80 && lastSnr >= 8) return "[#####]";
+    if (lastRssi >= -95 && lastSnr >= 4) return "[####-]";
+    if (lastRssi >= -110 && lastSnr >= 0) return "[###--]";
+    return "[##---]";
+}
+
+String GreenhouseTelegramBot::buildDashboardStatusHeader() const {
+    String header = "<b>Greenhouse Sensor Dashboard</b>\n";
+    header += "<code>";
+    header += "🛜 ";
+    header += getLinkQualityLabel();
+    header += " | RSSI: ";
+    if (isLinkConnected()) {
+        header += String(lastRssi);
+        header += " SNR: ";
+        header += String(lastSnr);
+    } else {
+        header += "-- dBm | SNR -- dB";
+    }
+    header += "\n";
+    header += "Conn ";
+    header += isLinkConnected() && linkConnectedSinceMillis ? formatDuration(millis() - linkConnectedSinceMillis) : String("00:00:00");
+    header += " | Uptime ";
+    header += formatDuration(millis() - deviceBootMillis);
+    header += "</code>\n\n";
+    return header;
+}
+
 void GreenhouseTelegramBot::handleUpdate(fb::Update& u) {
     if (u.isQuery()) {
         handleQuery(u);
@@ -94,6 +167,7 @@ void GreenhouseTelegramBot::handleMessage(fb::Update& u) {
     if (awaitValue && activeConfigIndex >= 0 && activeConfigIndex < numSettings) {
         float newVal = text.toFloat(); // Fallback if nan
         *(settings[activeConfigIndex].valueRef) = newVal;
+        if (settingChangedCb) settingChangedCb(settings[activeConfigIndex].key, newVal);
 
         fb::Message msg("✅ " + settings[activeConfigIndex].name + " updated to: " + String(newVal, 1) + settings[activeConfigIndex].unit, chatID);
         bot.sendMessage(msg);
@@ -125,24 +199,24 @@ void GreenhouseTelegramBot::handleQuery(fb::Update& u) {
 
     // Dashboard Top Level Routes
     if (qData == "menu_controls") {
-        sendControlsMenu(chatID, msgID);
         bot.answerCallbackQuery(u.query().id());
+        sendControlsMenu(chatID, msgID);
         return;
     }
     if (qData == "menu_setpoints") {
-        sendConfigMainMenu(chatID, msgID);
         bot.answerCallbackQuery(u.query().id());
+        sendConfigMainMenu(chatID, msgID);
         return;
     }
     if (qData == "menu_display") {
+        bot.answerCallbackQuery(u.query().id());
         dashboardMsgID = sendUnicodeGraph(chatID, msgID);
         dashboardLiveView = true;
-        bot.answerCallbackQuery(u.query().id());
         return;
     }
     if (qData == "menu_svg") {
-        sendSvgMenu(chatID, msgID);
         bot.answerCallbackQuery(u.query().id());
+        sendSvgMenu(chatID, msgID);
         return;
     }
     if (qData == "dl_logs") {
@@ -151,29 +225,30 @@ void GreenhouseTelegramBot::handleQuery(fb::Update& u) {
         return;
     }
     if (qData == "dash_back") {
+        bot.answerCallbackQuery(u.query().id());
         sendDashboardMainMenu(chatID, msgID);
         dashboardMsgID = msgID;
-        bot.answerCallbackQuery(u.query().id());
         return;
     }
     if (qData == "dl_svg_day" || qData == "dl_svg_week") {
-        sendSvgGraph(chatID);
         bot.answerCallbackQuery(u.query().id(), "SVG sent");
+        sendSvgGraph(chatID);
         return;
     }
     
     // Setting selections
     if (qData.startsWith("csel_")) {
+        bot.answerCallbackQuery(u.query().id());
         int idx = qData.substring(5).toInt();
         if (idx >= 0 && idx < numSettings) {
             activeConfigIndex = idx;
             sendConfigEditMenu(chatID, msgID, idx);
         }
-        bot.answerCallbackQuery(u.query().id());
         return;
     }
     // Settings +/- Adjustments
     if (qData.startsWith("cadd_") || qData.startsWith("csub_")) {
+        bot.answerCallbackQuery(u.query().id(), "Value changed");
         int underscore1 = qData.indexOf('_');
         int underscore2 = qData.lastIndexOf('_');
         if (underscore1 != -1 && underscore2 != -1) {
@@ -186,63 +261,41 @@ void GreenhouseTelegramBot::handleQuery(fb::Update& u) {
 
             if (prmIdx >= 0 && prmIdx < numSettings) {
                 *(settings[prmIdx].valueRef) += amount;
+                if (settingChangedCb) settingChangedCb(settings[prmIdx].key, *(settings[prmIdx].valueRef));
                 sendConfigEditMenu(chatID, msgID, prmIdx);
             }
         }
-        bot.answerCallbackQuery(u.query().id(), "Value changed");
         return;
     }
     if (qData == "conf_back") {
-        if (operatingMode == MODE_DASHBOARD) {
-            sendDashboardMainMenu(chatID, msgID);
-        } else {
-            sendConfigMainMenu(chatID, msgID);
-        }
         bot.answerCallbackQuery(u.query().id());
+        sendConfigMainMenu(chatID, msgID);
         return;
     }
     
     // Direct Controls Routing (Business Logic Callbacks)
     if (qData.startsWith("evon_")) {
+        bot.answerCallbackQuery(u.query().id(), "Command executing");
         int idx = qData.substring(5).toInt();
         if (idx >= 0 && idx < numEvents && eventMetadata[idx].controlCallback) {
             eventMetadata[idx].controlCallback(true);
         }
-        bot.answerCallbackQuery(u.query().id(), "Command executing");
         return;
     }
     if (qData.startsWith("evoff_")) {
+        bot.answerCallbackQuery(u.query().id(), "Command executing");
         int idx = qData.substring(6).toInt();
         if (idx >= 0 && idx < numEvents && eventMetadata[idx].controlCallback) {
             eventMetadata[idx].controlCallback(false);
         }
-        bot.answerCallbackQuery(u.query().id(), "Command executing");
         return;
     }
 }
 
 void GreenhouseTelegramBot::sendDashboardMainMenu(fb::ID chatID, uint32_t editMsgID) {
-    String txt = "<b>GH Live Dashboard</b>\n\nChoose an action below:";
-    dashboardLiveView = false;
-    
-    fb::InlineMenu menu("[Controls];[Set Points];[Display]\n"
-                        "[Download Logs];[SVG Plot]", 
-                        "menu_controls;menu_setpoints;menu_display;"
-                        "dl_logs;menu_svg");
-
-    if (editMsgID == 0) {
-        fb::Message msg(txt, chatID);
-        msg.mode = fb::Message::Mode::HTML;
-        msg.setInlineMenu(menu);
-        bot.sendMessage(msg);
-        dashboardMsgID = bot.lastBotMessage();
-    } else {
-        fb::TextEdit msg(txt, editMsgID, chatID);
-        msg.mode = fb::Message::Mode::HTML;
-        msg.setInlineMenu(menu);
-        bot.editText(msg);
-        dashboardMsgID = editMsgID;
-    }
+    dashboardMsgID = sendUnicodeGraph(chatID, editMsgID);
+    dashboardLiveView = true;
+    targetChatID = chatID;
 }
 
 void GreenhouseTelegramBot::sendControlsMenu(fb::ID chatID, uint32_t editMsgID) {
@@ -268,7 +321,7 @@ void GreenhouseTelegramBot::sendControlsMenu(fb::ID chatID, uint32_t editMsgID) 
     fb::TextEdit msg(txt, editMsgID, chatID);
     msg.mode = fb::Message::Mode::HTML;
     msg.setInlineMenu(menu);
-    bot.editText(msg);
+    bot.editText(msg, false);
 }
 
 void GreenhouseTelegramBot::sendSvgMenu(fb::ID chatID, uint32_t editMsgID) {
@@ -278,7 +331,7 @@ void GreenhouseTelegramBot::sendSvgMenu(fb::ID chatID, uint32_t editMsgID) {
     fb::TextEdit msg(txt, editMsgID, chatID);
     msg.mode = fb::Message::Mode::HTML;
     msg.setInlineMenu(menu);
-    bot.editText(msg);
+    bot.editText(msg, false);
 }
 
 
@@ -306,12 +359,12 @@ void GreenhouseTelegramBot::sendConfigMainMenu(fb::ID chatID, uint32_t editMsgID
         fb::Message msg(txt, chatID);
         msg.mode = fb::Message::Mode::HTML;
         msg.setInlineMenu(menu);
-        bot.sendMessage(msg);
+        bot.sendMessage(msg, false);
     } else {
         fb::TextEdit msg(txt, editMsgID, chatID);
         msg.mode = fb::Message::Mode::HTML;
         msg.setInlineMenu(menu);
-        bot.editText(msg);
+        bot.editText(msg, false);
     }
 }
 
@@ -334,133 +387,143 @@ void GreenhouseTelegramBot::sendConfigEditMenu(fb::ID chatID, uint32_t msgID, in
     fb::TextEdit msg(txt, msgID, chatID);
     msg.mode = fb::Message::Mode::HTML;
     msg.setInlineMenu(menu);
-    bot.editText(msg);
+    bot.editText(msg, false);
 }
 
 uint32_t GreenhouseTelegramBot::sendUnicodeGraph(fb::ID chatID, uint32_t editMsgID) {
-    if (!logBuffer || logBuffer->getCount() == 0 || numSensors == 0) return 0;
-    
-    // For the sparkline dashboard, we show the last N entries (e.g. 48 for sparklines)
-    size_t totalCount = logBuffer->getCount();
-    size_t count = (totalCount > 48) ? 48 : totalCount; 
-    size_t startIndex = totalCount - count;
+    if (!logBuffer || numSensors == 0) return editMsgID; // Can't do anything without struct refs
 
-    int width = 32;
+    String msgText = buildDashboardStatusHeader();
+    if (!cachedDashboardBody.isEmpty() && logBuffer->getCount() > 0) {
+        msgText += cachedDashboardBody;
+    } else if (logBuffer->getCount() == 0) {
+        msgText += "<i>Waiting for live sensor data over LoRa...</i>";
+    } else {
+        // For the sparkline dashboard, we show the last N entries (e.g. 48 for sparklines)
+        size_t totalCount = logBuffer->getCount();
+        size_t count = (totalCount > 48) ? 48 : totalCount; 
+        size_t startIndex = totalCount - count;
 
-    // Unicode block elements for drawing a vertical sparkline:  ▂▃▄▅▆▇
-    const char* blocks[] = {" ", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
-    float blocksPerReading = (float)width / count;
-    
-    String title = "Greenhouse Sensor Dashboard";
-    String msgText = "<b>" + title + "</b>\n\n";
+        int width = 32;
 
-    // --- Render Binary Event Histories (Fans, Sides, etc) ---
-    if (numEvents > 0) {
-        msgText += "<u><b>Actuators: </b></u>\n";
-        for (int e = 0; e < numEvents; e++) {
-            String emjStr = "";
+        // Unicode block elements for drawing a vertical sparkline:  ▂▃▄▅▆▇
+        const char* blocks[] = {" ", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
+        float blocksPerReading = (float)width / count;
+        
+        String bodyText;
+
+        // --- Render Binary Event Histories (Fans, Sides, etc) ---
+        if (numEvents > 0) {
+            bodyText += "<u><b>Actuators: </b></u>\n";
+            for (int e = 0; e < numEvents; e++) {
+                String emjStr = "";
+                int blocksAdded = 0;
+                
+                for (size_t i = 0; i < count; i++) {
+                    LogEntry entry = logBuffer->get(startIndex + i);
+                    bool state = entry.*(eventMetadata[e].stateField);
+                    
+                    // Emojis are visually 2 characters wide in monospace layout, so we target half the total width blocks
+                    int targetTotalBlocks = int((i + 1) * (blocksPerReading / 2.0)) - 1; // -1 to prevent overshooting due to emoji width
+                    int blocksToAdd = targetTotalBlocks - blocksAdded;
+                    
+                    for (int j = 0; j < blocksToAdd; j++) {
+                        if (state) emjStr += eventMetadata[e].emojiOn;
+                        else emjStr += eventMetadata[e].emojiOff;
+                        blocksAdded++;
+                    }
+                }
+                
+                LogEntry lastEntry = logBuffer->get(totalCount - 1);
+                bool currentState = lastEntry.*(eventMetadata[e].stateField);
+                String stateStr = currentState ? eventMetadata[e].onStr : eventMetadata[e].offStr;
+                bodyText += eventMetadata[e].name;
+                bodyText += ": " + stateStr + "\n";
+                // Emoji line might not line up perfectly with monospace depending on Telegram OS client, but `<code>` block isn't great for Emojis.
+                bodyText += "<code>" + emjStr + "</code>\n";
+            }
+        }
+
+        // Formatting the timestamps
+        String startTimeStr = formatTime(logBuffer->get(startIndex).timestamp);
+        String midTimeStr = formatTime(logBuffer->get(startIndex + count/2).timestamp);
+        String endTimeStr = formatTime(logBuffer->get(totalCount-1).timestamp);
+        
+        int remainingSpaces = width - startTimeStr.length() - midTimeStr.length() - endTimeStr.length();
+        if (remainingSpaces < 0) remainingSpaces = 0;
+        
+        int space1 = remainingSpaces / 2;
+        int space2 = remainingSpaces - space1;
+        
+        String spaceBuf1 = "";
+        for (int i = 0; i < space1; i++) spaceBuf1 += " ";
+        String spaceBuf2 = "";
+        for (int i = 0; i < space2; i++) spaceBuf2 += " ";
+        
+        String timeAxis = "<code>" + startTimeStr + spaceBuf1 + midTimeStr + spaceBuf2 + endTimeStr + "</code>\n";
+
+        bodyText += timeAxis;
+
+
+        // --- Render Analog Sensor Histories ---
+        bodyText += "\n<u><b>Sensor Readings: </b></u>\n";
+        for (int h = 0; h < numSensors; h++) {
+            float min_val = logBuffer->get(startIndex).*(sensorMetadata[h].valueField);
+            float max_val = logBuffer->get(startIndex).*(sensorMetadata[h].valueField);
+            float sum_val = 0;
+            
+            for (size_t i = 0; i < count; i++) {
+                float val = logBuffer->get(startIndex + i).*(sensorMetadata[h].valueField);
+                if (val < min_val) min_val = val;
+                if (val > max_val) max_val = val;
+                sum_val += val;
+            }
+            float avg_val = sum_val / count;
+
+            String sparkline = "";
             int blocksAdded = 0;
             
             for (size_t i = 0; i < count; i++) {
-                LogEntry entry = logBuffer->get(startIndex + i);
-                bool state = entry.*(eventMetadata[e].stateField);
+                float val = logBuffer->get(startIndex + i).*(sensorMetadata[h].valueField);
+                int block_idx = 0;
+                if (max_val > min_val) {
+                    // Scale reading to an index between 0 and 7
+                    block_idx = int(((val - min_val) / (max_val - min_val)) * 7);
+                }
                 
-                // Emojis are visually 2 characters wide in monospace layout, so we target half the total width blocks
-                int targetTotalBlocks = int((i + 1) * (blocksPerReading / 2.0)) - 1; // -1 to prevent overshooting due to emoji width
+                // Calculate how many total blocks should exist by this point
+                int targetTotalBlocks = int((i + 1) * blocksPerReading);
                 int blocksToAdd = targetTotalBlocks - blocksAdded;
                 
                 for (int j = 0; j < blocksToAdd; j++) {
-                    if (state) emjStr += eventMetadata[e].emojiOn;
-                    else emjStr += eventMetadata[e].emojiOff;
+                    sparkline += blocks[block_idx];
                     blocksAdded++;
                 }
             }
             
-            LogEntry lastEntry = logBuffer->get(totalCount - 1);
-            bool currentState = lastEntry.*(eventMetadata[e].stateField);
-            String stateStr = currentState ? eventMetadata[e].onStr : eventMetadata[e].offStr;
-            msgText += eventMetadata[e].name;
-            msgText += ": " + stateStr + "\n";
-            // Emoji line might not line up perfectly with monospace depending on Telegram OS client, but `<code>` block isn't great for Emojis.
-            msgText += "<code>" + emjStr + "</code>\n";
-        }
-    }
+            String nameStr = String(sensorMetadata[h].name);
 
-    // Formatting the timestamps
-    String startTimeStr = formatTime(logBuffer->get(startIndex).timestamp);
-    String midTimeStr = formatTime(logBuffer->get(startIndex + count/2).timestamp);
-    String endTimeStr = formatTime(logBuffer->get(totalCount-1).timestamp);
-    
-    int remainingSpaces = width - startTimeStr.length() - midTimeStr.length() - endTimeStr.length();
-    if (remainingSpaces < 0) remainingSpaces = 0;
-    
-    int space1 = remainingSpaces / 2;
-    int space2 = remainingSpaces - space1;
-    
-    String spaceBuf1 = "";
-    for (int i = 0; i < space1; i++) spaceBuf1 += " ";
-    String spaceBuf2 = "";
-    for (int i = 0; i < space2; i++) spaceBuf2 += " ";
-    
-    String timeAxis = "<code>" + startTimeStr + spaceBuf1 + midTimeStr + spaceBuf2 + endTimeStr + "</code>\n";
+            // add trend arrow based on last 2 readings
 
-    msgText += timeAxis;
-
-
-    // --- Render Analog Sensor Histories ---
-    msgText += "\n<u><b>Sensor Readings: </b></u>\n";
-    for (int h = 0; h < numSensors; h++) {
-        float min_val = logBuffer->get(startIndex).*(sensorMetadata[h].valueField);
-        float max_val = logBuffer->get(startIndex).*(sensorMetadata[h].valueField);
-        float sum_val = 0;
-        
-        for (size_t i = 0; i < count; i++) {
-            float val = logBuffer->get(startIndex + i).*(sensorMetadata[h].valueField);
-            if (val < min_val) min_val = val;
-            if (val > max_val) max_val = val;
-            sum_val += val;
-        }
-        float avg_val = sum_val / count;
-
-        String sparkline = "";
-        int blocksAdded = 0;
-        
-        for (size_t i = 0; i < count; i++) {
-            float val = logBuffer->get(startIndex + i).*(sensorMetadata[h].valueField);
-            int block_idx = 0;
-            if (max_val > min_val) {
-                // Scale reading to an index between 0 and 7
-                block_idx = int(((val - min_val) / (max_val - min_val)) * 7);
+            float current_val = logBuffer->get(totalCount-1).*(sensorMetadata[h].valueField);
+            String trandArrow = "→";
+            if (count > 1) {
+                float prev_val = logBuffer->get(totalCount-2).*(sensorMetadata[h].valueField);
+                if (current_val > prev_val) trandArrow = "↗";
+                else if (current_val < prev_val) trandArrow = "↘";
             }
             
-            // Calculate how many total blocks should exist by this point
-            int targetTotalBlocks = int((i + 1) * blocksPerReading);
-            int blocksToAdd = targetTotalBlocks - blocksAdded;
-            
-            for (int j = 0; j < blocksToAdd; j++) {
-                sparkline += blocks[block_idx];
-                blocksAdded++;
-            }
+            bodyText += "<b>" + trandArrow + nameStr + ":</b> " + String(current_val, 1) + " " + String(sensorMetadata[h].unit) + "\n";
+            bodyText += "<code>" + sparkline + "\n";
+            bodyText += "min: " + String(min_val, 1);
+            bodyText += " max: " + String(max_val, 1);
+            bodyText += " avg: " + String(avg_val, 1);
+            bodyText += "\n</code>";
         }
-        
-        String nameStr = String(sensorMetadata[h].name);
-
-        float current_val = logBuffer->get(totalCount-1).*(sensorMetadata[h].valueField);
-        String trendStr = "→";
-        if (count > 1) {
-            float prev_val = logBuffer->get(totalCount-2).*(sensorMetadata[h].valueField);
-            if (current_val > prev_val) trendStr = "↗";
-            else if (current_val < prev_val) trendStr = "↘";
-        }
-        
-        msgText += "<b>" + nameStr + ":</b> " + String(current_val, 1) + " " + String(sensorMetadata[h].unit) + " " + trendStr + "\n";
-        msgText += "<code>" + sparkline + "\n";
-        msgText += "min: " + String(min_val, 1);
-        msgText += " max: " + String(max_val, 1);
-        msgText += " avg: " + String(avg_val, 1);
-        msgText += "\n</code>";
-    }
-    msgText += timeAxis;
+        bodyText += timeAxis;
+        cachedDashboardBody = bodyText;
+        msgText += bodyText;
+    } // end logBuffer parsing
 
     fb::InlineMenu menu("[Controls];[Set Points];[Display]\n"
                         "[Download Logs];[SVG Plot]", 
@@ -471,13 +534,13 @@ uint32_t GreenhouseTelegramBot::sendUnicodeGraph(fb::ID chatID, uint32_t editMsg
         fb::Message msg(msgText, chatID);
         msg.mode = fb::Message::Mode::HTML;
         msg.setInlineMenu(menu);
-        bot.sendMessage(msg);
+        bot.sendMessage(msg);  // wait=true needed to get lastBotMessage()
         return bot.lastBotMessage();
     } else {
         fb::TextEdit msg(msgText, editMsgID, chatID);
         msg.mode = fb::Message::Mode::HTML;
         msg.setInlineMenu(menu);
-        bot.editText(msg);
+        bot.editText(msg, false);
         return editMsgID;
     }
 }

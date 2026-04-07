@@ -33,6 +33,7 @@ struct EventMetadata {
 struct SettingsParameter {
     String icon;
     String name;
+    const char* key;     // Short identifier for LoRa commands (e.g. "TEMP1")
     float* valueRef;
     String unit;
 };
@@ -67,6 +68,7 @@ public:
     void tick();
     void refreshDashboard();
     void setLogFilePath(const String& path);
+    void updateLinkMetrics(int rssi, int snr);
 
     // Data references to update
     void setLogBuffer(RingBuffer* buffer);
@@ -75,9 +77,11 @@ public:
     void setEventMetadata(EventMetadata* metadata, int count);
     void setSettings(SettingsParameter* settings, int count);
 
-    // Callbacks for manual controls are now embedded in EventMetadata!
+    // Settings change callback (called whenever a setpoint is adjusted)
+    void onSettingChanged(void (*cb)(const char* key, float value)) { settingChangedCb = cb; }
 
 private:
+    void (*settingChangedCb)(const char* key, float value) = nullptr;
     FastBot2 bot;
     BotOperatingMode operatingMode;
     
@@ -99,6 +103,12 @@ private:
     String logFilePath;
     int activeConfigIndex;
     bool awaitValue;
+    String cachedDashboardBody;
+    unsigned long deviceBootMillis;
+    unsigned long lastLoRaRxMillis;
+    unsigned long linkConnectedSinceMillis;
+    int lastRssi;
+    int lastSnr;
 
     // Handlers
     void handleUpdate(fb::Update& u);
@@ -119,6 +129,11 @@ private:
     
     // Helpers
     String formatTime(DateTime dt);
+    String formatDuration(unsigned long elapsedMs) const;
+    bool isLinkConnected() const;
+    const char* getLinkQualityLabel() const;
+    const char* getLinkQualityBar() const;
+    String buildDashboardStatusHeader() const;
 };
 
 #endif // GREENHOUSE_TELEGRAM_H

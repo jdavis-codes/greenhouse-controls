@@ -70,12 +70,21 @@ EventMetadata activeEvents[] = {
 };
 
 SettingsParameter botSettings[] = {
-    {"🌡️", "Target Temp 1", &grnhouseTargetTemp1, "°F"},
-    {"🌡️", "Target Temp 2", &grnhouseTargetTemp2, "°F"},
-    {"📈", "Temp Delta", &grnhouseTempDelta, "°F"},
-    {"💧", "Target Moisture", (float *)&soilTargetMoisture, "%"}, 
-    {"📉", "Moisture Delta", (float *)&soilMoistureDelta, "%"}
+    {"🌡️", "Target Temp 1", "TEMP1", &grnhouseTargetTemp1, "°F"},
+    {"🌡️", "Target Temp 2", "TEMP2", &grnhouseTargetTemp2, "°F"},
+    {"📈", "Temp Delta", "TDELTA", &grnhouseTempDelta, "°F"},
+    {"💧", "Target Moisture", "MOIST", (float *)&soilTargetMoisture, "%"}, 
+    {"📉", "Moisture Delta", "MDELTA", (float *)&soilMoistureDelta, "%"}
 };
+
+void onSettingChanged(const char* key, float value) {
+    char payload[32];
+    snprintf(payload, sizeof(payload), "S,%s,%.1f", key, value);
+    rylr.startTxMessage();
+    rylr.addTxData(payload);
+    rylr.sendTxMessage(REMOTE_ADDRESS);
+    Serial.printf("LoRa TX Setting: %s\n", payload);
+}
 
 void showRoleLedGREEN() {
     digitalWrite(LEDR, HIGH);
@@ -147,6 +156,7 @@ void receiveAndProcessLoRa() {
     if (!message) return;
 
     blinkActivityLed();
+    telBot.updateLinkMetrics(message->rssi, message->snr);
     Serial.printf("RX from %d (RSSI %d, SNR %d) [%d bytes]: %s\n",
                   message->from_address, message->rssi, message->snr, message->data_len, message->data);
     
@@ -174,6 +184,7 @@ void setup() {
 
     // Initialize telegram bot which handles WiFi and the PSRAM RingBuffer setup
     telBot.begin(WIFI_SSID, WIFI_PASSWORD, activeSensors, activeEvents, botSettings);
+    telBot.onSettingChanged(onSettingChanged);
     logBuffer = telBot.getLogBuffer();
 
     Serial.println("Greenhouse LoRa Telegram Forwarder ready.");

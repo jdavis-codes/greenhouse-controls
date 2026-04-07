@@ -22,6 +22,13 @@ bool motor_up = false;
 bool fan_on = false;
 bool water_on = false;
 
+// Setpoint state (synced from forwarder via LoRa)
+float targetTemp1 = 80.0;
+float targetTemp2 = 85.0;
+float tempDelta = 4.0;
+float targetMoisture = 50.0;
+float moistureDelta = 10.0;
+
 // Send interval
 unsigned long lastSend = 0;
 const unsigned long SEND_INTERVAL = 15000;
@@ -62,26 +69,60 @@ void sendSensorPayload() {
 }
 
 void processCommand(const char* data) {
-    // Expected command format: C,FAN,1 or C,SIDES,0
-    char cmdType[16];
-    int val = 0;
-    if (sscanf(data, "C,%[^,],%d", cmdType, &val) == 2) {
-        if (strcmp(cmdType, "FAN") == 0) {
-            fan_on = (val == 1);
-            Serial.printf("\n==================================\n");
-            Serial.printf("📡 STUB EXEC: Fan set %s via LoRa\n", fan_on ? "ON" : "OFF");
-            Serial.printf("==================================\n\n");
-        } else if (strcmp(cmdType, "SIDES") == 0) {
-            motor_up = (val == 1);
-            Serial.printf("\n==================================\n");
-            Serial.printf("📡 STUB EXEC: Sides set %s via LoRa\n", motor_up ? "UP" : "DOWN");
-            Serial.printf("==================================\n\n");
-        } else if (strcmp(cmdType, "WATER") == 0) {
-            water_on = (val == 1);
-            Serial.printf("\n==================================\n");
-            Serial.printf("📡 STUB EXEC: Irrigation set %s via LoRa\n", water_on ? "ON" : "OFF");
-            Serial.printf("==================================\n\n");
+    // Control commands: C,<DEVICE>,<0|1>
+    if (strncmp(data, "C,", 2) == 0) {
+        char cmdType[16];
+        int val = 0;
+        if (sscanf(data + 2, "%[^,],%d", cmdType, &val) == 2) {
+            if (strcmp(cmdType, "FAN") == 0) {
+                fan_on = (val == 1);
+                Serial.printf("\n==================================\n");
+                Serial.printf("📡 STUB EXEC: Fan set %s via LoRa\n", fan_on ? "ON" : "OFF");
+                Serial.printf("==================================\n\n");
+                // TODO: actuate fan relay
+            } else if (strcmp(cmdType, "SIDES") == 0) {
+                motor_up = (val == 1);
+                Serial.printf("\n==================================\n");
+                Serial.printf("📡 STUB EXEC: Sides set %s via LoRa\n", motor_up ? "UP" : "DOWN");
+                Serial.printf("==================================\n\n");
+                // TODO: actuate roller motor
+            } else if (strcmp(cmdType, "WATER") == 0) {
+                water_on = (val == 1);
+                Serial.printf("\n==================================\n");
+                Serial.printf("📡 STUB EXEC: Irrigation set %s via LoRa\n", water_on ? "ON" : "OFF");
+                Serial.printf("==================================\n\n");
+                // TODO: actuate irrigation valve
+            }
         }
+        return;
+    }
+
+    // Setpoint commands: S,<KEY>,<float_value>
+    if (strncmp(data, "S,", 2) == 0) {
+        char key[16];
+        float val = 0;
+        if (sscanf(data + 2, "%[^,],%f", key, &val) == 2) {
+            float* target = nullptr;
+
+            if (strcmp(key, "TEMP1") == 0)       target = &targetTemp1;
+            else if (strcmp(key, "TEMP2") == 0)   target = &targetTemp2;
+            else if (strcmp(key, "TDELTA") == 0)  target = &tempDelta;
+            else if (strcmp(key, "MOIST") == 0)   target = &targetMoisture;
+            else if (strcmp(key, "MDELTA") == 0)  target = &moistureDelta;
+
+            if (target) {
+                *target = val;
+                Serial.printf("\n----------------------------------\n");
+                Serial.printf("⚙️  SETPOINT: %s = %.1f\n", key, val);
+                Serial.printf("----------------------------------\n");
+                Serial.printf("  Targets: T1=%.1f  T2=%.1f  TΔ=%.1f  M=%.1f  MΔ=%.1f\n\n",
+                              targetTemp1, targetTemp2, tempDelta, targetMoisture, moistureDelta);
+                // TODO: re-evaluate control logic with new setpoints
+            } else {
+                Serial.printf("Unknown setpoint key: %s\n", key);
+            }
+        }
+        return;
     }
 }
 
@@ -97,8 +138,9 @@ void receiveReplies() {
             processCommand(message->data);
             // Reply with updated state immediately
             sendSensorPayload();
-            // Reset interval timer appropriately
             lastSend = millis();
+        } else if (strncmp(message->data, "S,", 2) == 0) {
+            processCommand(message->data);
         }
     }
 }

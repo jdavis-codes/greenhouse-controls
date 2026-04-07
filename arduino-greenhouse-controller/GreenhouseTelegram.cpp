@@ -37,6 +37,7 @@ void GreenhouseTelegramBot::begin(const char* ssid, const char* pass,
 
 void GreenhouseTelegramBot::setup() {
     bot.attachUpdate([this](fb::Update& u) { handleUpdate(u); });
+    bot.setPollMode(fb::Poll::Long, 60000);
 }
 
 void GreenhouseTelegramBot::tick() {
