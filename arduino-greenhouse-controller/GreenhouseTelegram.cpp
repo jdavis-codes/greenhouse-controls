@@ -2,8 +2,38 @@
 
 GreenhouseTelegramBot::GreenhouseTelegramBot(const String& token, BotOperatingMode mode) 
     : bot(token), operatingMode(mode), targetChatID(0LL), dashboardLiveView(false), logFilePath("grnhs.txt"), dashboardMsgID(0), activeConfigIndex(-1), awaitValue(false),
-      sensorHistories(nullptr), numSensors(0), eventHistories(nullptr), numEvents(0), settings(nullptr), numSettings(0),
-      fanCallback(nullptr), irrigationCallback(nullptr), sidesCallback(nullptr) {}
+      logBuffer(nullptr), sensorMetadata(nullptr), numSensors(0), eventMetadata(nullptr), numEvents(0), settings(nullptr), numSettings(0) {}
+
+void GreenhouseTelegramBot::begin(const char* ssid, const char* pass, 
+                                  SensorMetadata* sensors, int numS,
+                                  EventMetadata* events, int numE,
+                                  SettingsParameter* params, int numP) {
+    // Initialize PSRAM log buffer
+    if (psramInit()) {
+        logBuffer = new RingBuffer(100000); // about 8 days if 5 mins per sample, actually 100k samples is 100k*5m=500k minutes = 347 days
+        Serial.println("PSRAM init success, LogBuffer allocated.");
+    } else {
+        Serial.println("PSRAM init failed! Bot will lack history.");
+    }                                  
+    
+    // Start WiFi
+    Serial.print("Connecting to WiFi ");
+    WiFi.begin(ssid, pass);
+    while (WiFi.status() != WL_CONNECTED)
+    {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println("\nWiFi connected!");
+
+    // Apply metadata
+    setSensorMetadata(sensors, numS);
+    setEventMetadata(events, numE);
+    setSettings(params, numP);
+
+    // Call underlying setup
+    setup();
+}
 
 void GreenhouseTelegramBot::setup() {
     bot.attachUpdate([this](fb::Update& u) { handleUpdate(u); });
@@ -23,25 +53,23 @@ void GreenhouseTelegramBot::setLogFilePath(const String& path) {
     logFilePath = path;
 }
 
-void GreenhouseTelegramBot::setSensorHistories(SensorHistory* histories, int count) {
-    sensorHistories = histories;
+void GreenhouseTelegramBot::setLogBuffer(RingBuffer* buffer) {
+    logBuffer = buffer;
+}
+
+void GreenhouseTelegramBot::setSensorMetadata(SensorMetadata* metadata, int count) {
+    sensorMetadata = metadata;
     numSensors = count;
 }
 
-void GreenhouseTelegramBot::setEventHistories(EventHistory* events, int count) {
-    eventHistories = events;
+void GreenhouseTelegramBot::setEventMetadata(EventMetadata* metadata, int count) {
+    eventMetadata = metadata;
     numEvents = count;
 }
 
 void GreenhouseTelegramBot::setSettings(SettingsParameter* p, int count) {
     settings = p;
     numSettings = count;
-}
-
-void GreenhouseTelegramBot::setControlCallbacks(void (*onFan)(bool), void (*onIrrigation)(bool), void (*onSides)(bool)) {
-    fanCallback = onFan;
-    irrigationCallback = onIrrigation;
-    sidesCallback = onSides;
 }
 
 String GreenhouseTelegramBot::formatTime(DateTime dt) {
@@ -175,14 +203,22 @@ void GreenhouseTelegramBot::handleQuery(fb::Update& u) {
     }
     
     // Direct Controls Routing (Business Logic Callbacks)
-    if (qData == "ctrl_fan_on" && fanCallback) fanCallback(true);
-    if (qData == "ctrl_fan_off" && fanCallback) fanCallback(false);
-    if (qData == "ctrl_side_up" && sidesCallback) sidesCallback(true);
-    if (qData == "ctrl_side_down" && sidesCallback) sidesCallback(false);
-    if (qData == "ctrl_water_on" && irrigationCallback) irrigationCallback(true);
-    if (qData == "ctrl_water_off" && irrigationCallback) irrigationCallback(false);
-    
-    if (qData.startsWith("ctrl_")) bot.answerCallbackQuery(u.query().id(), "Command executing");
+    if (qData.startsWith("evon_")) {
+        int idx = qData.substring(5).toInt();
+        if (idx >= 0 && idx < numEvents && eventMetadata[idx].controlCallback) {
+            eventMetadata[idx].controlCallback(true);
+        }
+        bot.answerCallbackQuery(u.query().id(), "Command executing");
+        return;
+    }
+    if (qData.startsWith("evoff_")) {
+        int idx = qData.substring(6).toInt();
+        if (idx >= 0 && idx < numEvents && eventMetadata[idx].controlCallback) {
+            eventMetadata[idx].controlCallback(false);
+        }
+        bot.answerCallbackQuery(u.query().id(), "Command executing");
+        return;
+    }
 }
 
 void GreenhouseTelegramBot::sendDashboardMainMenu(fb::ID chatID, uint32_t editMsgID) {
@@ -212,14 +248,22 @@ void GreenhouseTelegramBot::sendDashboardMainMenu(fb::ID chatID, uint32_t editMs
 void GreenhouseTelegramBot::sendControlsMenu(fb::ID chatID, uint32_t editMsgID) {
     String txt = "<b>Manual Equipment Override</b>";
     dashboardLiveView = false;
-    fb::InlineMenu menu("[Fan ON];[Fan OFF]\n"
-                        "[Irrigation ON];[Irrigation OFF]\n"
-                        "[Sides UP];[Sides DOWN]\n"
-                        "🔙 Back", 
-                        "ctrl_fan_on;ctrl_fan_off;"
-                        "ctrl_water_on;ctrl_water_off;"
-                        "ctrl_side_up;ctrl_side_down;"
-                        "dash_back");
+    
+    String lbls = "";
+    String cbs = "";
+    
+    for (int i = 0; i < numEvents; i++) {
+        if (eventMetadata[i].controlCallback != nullptr) {
+            lbls += "[" + String(eventMetadata[i].name) + " " + String(eventMetadata[i].onStr) + "];" + 
+                    "[" + String(eventMetadata[i].name) + " " + String(eventMetadata[i].offStr) + "]\n";
+            cbs += "evon_" + String(i) + ";evoff_" + String(i) + ";";
+        }
+    }
+    
+    lbls += "🔙 Back";
+    cbs += "dash_back";
+    
+    fb::InlineMenu menu(lbls, cbs);
     
     fb::TextEdit msg(txt, editMsgID, chatID);
     msg.mode = fb::Message::Mode::HTML;
@@ -294,8 +338,13 @@ void GreenhouseTelegramBot::sendConfigEditMenu(fb::ID chatID, uint32_t msgID, in
 }
 
 uint32_t GreenhouseTelegramBot::sendUnicodeGraph(fb::ID chatID, uint32_t editMsgID) {
-    if (numSensors == 0 || sensorHistories[0].count == 0) return 0;
-    int count = sensorHistories[0].count; // Assumes synchronized timestamps
+    if (!logBuffer || logBuffer->getCount() == 0 || numSensors == 0) return 0;
+    
+    // For the sparkline dashboard, we show the last N entries (e.g. 48 for sparklines)
+    size_t totalCount = logBuffer->getCount();
+    size_t count = (totalCount > 48) ? 48 : totalCount; 
+    size_t startIndex = totalCount - count;
+
     int width = 32;
 
     // Unicode block elements for drawing a vertical sparkline:  ▂▃▄▅▆▇
@@ -312,21 +361,25 @@ uint32_t GreenhouseTelegramBot::sendUnicodeGraph(fb::ID chatID, uint32_t editMsg
             String emjStr = "";
             int blocksAdded = 0;
             
-            for (int i = 0; i < count; i++) {
+            for (size_t i = 0; i < count; i++) {
+                LogEntry entry = logBuffer->get(startIndex + i);
+                bool state = entry.*(eventMetadata[e].stateField);
+                
                 // Emojis are visually 2 characters wide in monospace layout, so we target half the total width blocks
                 int targetTotalBlocks = int((i + 1) * (blocksPerReading / 2.0)) - 1; // -1 to prevent overshooting due to emoji width
                 int blocksToAdd = targetTotalBlocks - blocksAdded;
                 
                 for (int j = 0; j < blocksToAdd; j++) {
-                    if (eventHistories[e].readings[i].state) emjStr += eventHistories[e].emojiOn;
-                    else emjStr += eventHistories[e].emojiOff;
+                    if (state) emjStr += eventMetadata[e].emojiOn;
+                    else emjStr += eventMetadata[e].emojiOff;
                     blocksAdded++;
                 }
             }
             
-            bool currentState = eventHistories[e].readings[count - 1].state;
-            String stateStr = currentState ? eventHistories[e].onStr : eventHistories[e].offStr;
-            msgText += eventHistories[e].name;
+            LogEntry lastEntry = logBuffer->get(totalCount - 1);
+            bool currentState = lastEntry.*(eventMetadata[e].stateField);
+            String stateStr = currentState ? eventMetadata[e].onStr : eventMetadata[e].offStr;
+            msgText += eventMetadata[e].name;
             msgText += ": " + stateStr + "\n";
             // Emoji line might not line up perfectly with monospace depending on Telegram OS client, but `<code>` block isn't great for Emojis.
             msgText += "<code>" + emjStr + "</code>\n";
@@ -334,9 +387,9 @@ uint32_t GreenhouseTelegramBot::sendUnicodeGraph(fb::ID chatID, uint32_t editMsg
     }
 
     // Formatting the timestamps
-    String startTimeStr = formatTime(sensorHistories[0].readings[0].timestamp);
-    String midTimeStr = formatTime(sensorHistories[0].readings[count/2].timestamp);
-    String endTimeStr = formatTime(sensorHistories[0].readings[count-1].timestamp);
+    String startTimeStr = formatTime(logBuffer->get(startIndex).timestamp);
+    String midTimeStr = formatTime(logBuffer->get(startIndex + count/2).timestamp);
+    String endTimeStr = formatTime(logBuffer->get(totalCount-1).timestamp);
     
     int remainingSpaces = width - startTimeStr.length() - midTimeStr.length() - endTimeStr.length();
     if (remainingSpaces < 0) remainingSpaces = 0;
@@ -357,25 +410,27 @@ uint32_t GreenhouseTelegramBot::sendUnicodeGraph(fb::ID chatID, uint32_t editMsg
     // --- Render Analog Sensor Histories ---
     msgText += "\n<u><b>Sensor Readings: </b></u>\n";
     for (int h = 0; h < numSensors; h++) {
-        float min_val = sensorHistories[h].readings[0].value;
-        float max_val = sensorHistories[h].readings[0].value;
+        float min_val = logBuffer->get(startIndex).*(sensorMetadata[h].valueField);
+        float max_val = logBuffer->get(startIndex).*(sensorMetadata[h].valueField);
         float sum_val = 0;
         
-        for (int i = 0; i < count; i++) {
-            if (sensorHistories[h].readings[i].value < min_val) min_val = sensorHistories[h].readings[i].value;
-            if (sensorHistories[h].readings[i].value > max_val) max_val = sensorHistories[h].readings[i].value;
-            sum_val += sensorHistories[h].readings[i].value;
+        for (size_t i = 0; i < count; i++) {
+            float val = logBuffer->get(startIndex + i).*(sensorMetadata[h].valueField);
+            if (val < min_val) min_val = val;
+            if (val > max_val) max_val = val;
+            sum_val += val;
         }
         float avg_val = sum_val / count;
 
         String sparkline = "";
         int blocksAdded = 0;
         
-        for (int i = 0; i < count; i++) {
+        for (size_t i = 0; i < count; i++) {
+            float val = logBuffer->get(startIndex + i).*(sensorMetadata[h].valueField);
             int block_idx = 0;
             if (max_val > min_val) {
                 // Scale reading to an index between 0 and 7
-                block_idx = int(((sensorHistories[h].readings[i].value - min_val) / (max_val - min_val)) * 7);
+                block_idx = int(((val - min_val) / (max_val - min_val)) * 7);
             }
             
             // Calculate how many total blocks should exist by this point
@@ -388,17 +443,17 @@ uint32_t GreenhouseTelegramBot::sendUnicodeGraph(fb::ID chatID, uint32_t editMsg
             }
         }
         
-        String nameStr = String(sensorHistories[h].name);
+        String nameStr = String(sensorMetadata[h].name);
 
-        float current_val = sensorHistories[h].readings[count-1].value;
+        float current_val = logBuffer->get(totalCount-1).*(sensorMetadata[h].valueField);
         String trendStr = "→";
         if (count > 1) {
-            float prev_val = sensorHistories[h].readings[count-2].value;
+            float prev_val = logBuffer->get(totalCount-2).*(sensorMetadata[h].valueField);
             if (current_val > prev_val) trendStr = "↗";
             else if (current_val < prev_val) trendStr = "↘";
         }
         
-        msgText += "<b>" + nameStr + ":</b> " + String(current_val, 1) + " " + String(sensorHistories[h].unit) + " " + trendStr + "\n";
+        msgText += "<b>" + nameStr + ":</b> " + String(current_val, 1) + " " + String(sensorMetadata[h].unit) + " " + trendStr + "\n";
         msgText += "<code>" + sparkline + "\n";
         msgText += "min: " + String(min_val, 1);
         msgText += " max: " + String(max_val, 1);
@@ -452,15 +507,20 @@ bool GreenhouseTelegramBot::sendLogFile(fb::ID chatID) {
 }
 
 void GreenhouseTelegramBot::sendSvgGraph(fb::ID chatID) {
-    if (numSensors == 0 || sensorHistories[0].count == 0) return;
-    int count = sensorHistories[0].count; // Assumes all histories have the same count and synchronized timestamps
+    if (!logBuffer || logBuffer->getCount() == 0 || numSensors == 0) return;
+    
+    // Default to last 288 records (24h of 5-min intervals)
+    size_t totalCount = logBuffer->getCount();
+    size_t count = (totalCount > 288) ? 288 : totalCount; 
+    size_t startIndex = totalCount - count;
 
-    float min_val = sensorHistories[0].readings[0].value;
-    float max_val = sensorHistories[0].readings[0].value;
+    float min_val = logBuffer->get(startIndex).*(sensorMetadata[0].valueField);
+    float max_val = logBuffer->get(startIndex).*(sensorMetadata[0].valueField);
     for (int h = 0; h < numSensors; h++) {
-        for (int i = 0; i < count; i++) {
-            if (sensorHistories[h].readings[i].value < min_val) min_val = sensorHistories[h].readings[i].value;
-            if (sensorHistories[h].readings[i].value > max_val) max_val = sensorHistories[h].readings[i].value;
+        for (size_t i = 0; i < count; i++) {
+            float val = logBuffer->get(startIndex + i).*(sensorMetadata[h].valueField);
+            if (val < min_val) min_val = val;
+            if (val > max_val) max_val = val;
         }
     }
     
@@ -489,7 +549,7 @@ void GreenhouseTelegramBot::sendSvgGraph(fb::ID chatID) {
     svg += "  </style>\n";
     
     // Background and Title
-    String title = (numSensors == 1) ? String(sensorHistories[0].name) : "Combined Sensor";
+    String title = (numSensors == 1) ? String(sensorMetadata[0].name) : "Combined Sensor";
     svg += "  <text x=\"" + String(width / 2) + "\" y=\"20\" class=\"title\" text-anchor=\"middle\">" + title + " History</text>\n";
 
     // Draw Axes
@@ -501,23 +561,25 @@ void GreenhouseTelegramBot::sendSvgGraph(fb::ID chatID) {
     svg += "  <text x=\"" + String(marginX - 5) + "\" y=\"" + String(height - marginYBottom + 4) + "\" class=\"axis\" text-anchor=\"end\">" + String(min_val, 1) + "</text>\n";
     
     // X-Axis Time Labels (Drawn once for the primary timescale)
-    for (int i = 0; i < count; i++) {
-        int x = marginX + (i * pointSpacing) + (pointSpacing / 2);
-        svg += "  <text x=\"" + String(x) + "\" y=\"" + String(height - marginYBottom + 16) + "\" class=\"axis\" text-anchor=\"middle\">" + formatTime(sensorHistories[0].readings[i].timestamp) + "</text>\n";
+    for (size_t i = 0; i < count; i++) {
+        if (i % 12 == 0 || i == count - 1) { // Sparsify time labels
+            int x = marginX + (i * pointSpacing) + (pointSpacing / 2);
+            svg += "  <text x=\"" + String(x) + "\" y=\"" + String(height - marginYBottom + 16) + "\" class=\"axis\" text-anchor=\"middle\">" + formatTime(logBuffer->get(startIndex + i).timestamp) + "</text>\n";
+        }
     }
 
     // Draw Blocks for Events (ON State)
     if (numEvents > 0) {
         for (int e = 0; e < numEvents; e++) {
-            String color = eventHistories[e].color ? String(eventHistories[e].color) : "#000000";
+            String color = eventMetadata[e].color ? String(eventMetadata[e].color) : "#000000";
             int yEvent = height - marginYBottom + marginYBottomBase + (e * eventRowHeight) - 8;
             
             // Draw Event Title on Y Axis
-            svg += "  <text x=\"" + String(marginX - 5) + "\" y=\"" + String(yEvent + 8) + "\" class=\"axis\" text-anchor=\"end\">" + String(eventHistories[e].name) + "</text>\n";
+            svg += "  <text x=\"" + String(marginX - 5) + "\" y=\"" + String(yEvent + 8) + "\" class=\"axis\" text-anchor=\"end\">" + String(eventMetadata[e].name) + "</text>\n";
             
             // Draw Rectangles for Active States
-            for (int i = 0; i < eventHistories[e].count; i++) {
-                if (eventHistories[e].readings[i].state) {
+            for (size_t i = 0; i < count; i++) {
+                if (logBuffer->get(startIndex + i).*(eventMetadata[e].stateField)) {
                     int xRect = marginX + (i * pointSpacing);
                     svg += "  <rect x=\"" + String(xRect) + "\" y=\"" + String(yEvent) + "\" width=\"" + String(pointSpacing) + "\" height=\"10\" fill=\"" + color + "\" opacity=\"0.6\" />\n";
                 }
@@ -527,32 +589,35 @@ void GreenhouseTelegramBot::sendSvgGraph(fb::ID chatID) {
 
     // Start drawing data lines for each history
     for (int h = 0; h < numSensors; h++) {
-        String color = sensorHistories[h].color ? String(sensorHistories[h].color) : "#000000";
+        String color = sensorMetadata[h].color ? String(sensorMetadata[h].color) : "#000000";
         
         // Draw Legend for this line
         int legendX = marginX + 10 + (h * 80);
-        svg += "  <text x=\"" + String(legendX) + "\" y=\"40\" class=\"legend\" fill=\"" + color + "\">" + String(sensorHistories[h].name) + "</text>\n";
+        svg += "  <text x=\"" + String(legendX) + "\" y=\"40\" class=\"legend\" fill=\"" + color + "\">" + String(sensorMetadata[h].name) + "</text>\n";
 
         // Line
         svg += "  <polyline fill=\"none\" stroke=\"" + color + "\" stroke-width=\"2\" points=\"";
-        for (int i = 0; i < count; i++) {
+        for (size_t i = 0; i < count; i++) {
+            float val = logBuffer->get(startIndex + i).*(sensorMetadata[h].valueField);
             int x = marginX + (i * pointSpacing) + (pointSpacing / 2);
-            int y = height - marginYBottom - int(((sensorHistories[h].readings[i].value - min_val) / (max_val - min_val)) * graphHeight);
+            int y = height - marginYBottom - int(((val - min_val) / (max_val - min_val)) * graphHeight);
             svg += String(x) + "," + String(y) + " ";
         }
         svg += "\" />\n";
         
         // Draw points and values
-        for (int i = 0; i < count; i++) {
+        for (size_t i = 0; i < count; i++) {
+            float val = logBuffer->get(startIndex + i).*(sensorMetadata[h].valueField);
             int x = marginX + (i * pointSpacing) + (pointSpacing / 2);
-            int y = height - marginYBottom - int(((sensorHistories[h].readings[i].value - min_val) / (max_val - min_val)) * graphHeight);
+            int y = height - marginYBottom - int(((val - min_val) / (max_val - min_val)) * graphHeight);
             
             // Value point
-            svg += "  <circle cx=\"" + String(x) + "\" cy=\"" + String(y) + "\" r=\"3.5\" fill=\"" + color + "\" />\n";
-            
-            // Offset the value string vertically to reduce overlap between lines (basic heuristic)
-            int yOffset = (h % 2 == 0) ? -8 : 14; 
-            svg += "  <text x=\"" + String(x) + "\" y=\"" + String(y + yOffset) + "\" class=\"val\" fill=\"" + color + "\" text-anchor=\"middle\">" + String(sensorHistories[h].readings[i].value, 1) + "</text>\n";
+            // For large datasets, limit drawing labels to prevent clutter
+            if (i % 12 == 0 || i == count - 1) { 
+                svg += "  <circle cx=\"" + String(x) + "\" cy=\"" + String(y) + "\" r=\"3.5\" fill=\"" + color + "\" />\n";
+                int yOffset = (h % 2 == 0) ? -8 : 14; 
+                svg += "  <text x=\"" + String(x) + "\" y=\"" + String(y + yOffset) + "\" class=\"val\" fill=\"" + color + "\" text-anchor=\"middle\">" + String(val, 1) + "</text>\n";
+            }
         }
     }
     svg += "</svg>";

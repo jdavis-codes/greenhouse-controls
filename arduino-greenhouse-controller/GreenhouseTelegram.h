@@ -2,40 +2,31 @@
 #define GREENHOUSE_TELEGRAM_H
 
 #include <Arduino.h>
+#include <WiFi.h>
 #include <FastBot2.h>
 #include <RTClib.h>
 #include <FFat.h>
 #include <SD.h>
+#include "LogBuffer.h"
 
 // --- Data Structures ---
 
-struct SensorReading {
-    DateTime timestamp;
-    float value;
-};
-
-struct SensorHistory {
+struct SensorMetadata {
     const char* name;
     const char* unit;
     const char* color;
-    int count;
-    SensorReading* readings;
+    float LogEntry::*valueField;
 };
 
-struct EventReading {
-    DateTime timestamp;
-    bool state;
-};
-
-struct EventHistory {
+struct EventMetadata {
     const char* name;
     const char* emojiOn;
     const char* emojiOff;
     const char* onStr;
     const char* offStr;
     const char* color;
-    int count;
-    EventReading* readings;
+    bool LogEntry::*stateField;
+    void (*controlCallback)(bool);
 };
 
 struct SettingsParameter {
@@ -56,36 +47,49 @@ class GreenhouseTelegramBot {
 public:
     GreenhouseTelegramBot(const String& token, BotOperatingMode mode);
     
+    // Convenience all-in-one setup that inits PSRAM and creates log buffer
+    void begin(const char* ssid, const char* pass, 
+               SensorMetadata* sensors, int numS,
+               EventMetadata* events, int numE,
+               SettingsParameter* params, int numP);
+
+    // Elegant C++ template wrapper to deduce array sizes automatically
+    template <size_t numS, size_t numE, size_t numP>
+    void begin(const char* ssid, const char* pass, 
+               SensorMetadata (&sensors)[numS],
+               EventMetadata (&events)[numE],
+               SettingsParameter (&params)[numP]) {
+        begin(ssid, pass, sensors, numS, events, numE, params, numP);
+    }
+
     void setup();
     void tick();
     void refreshDashboard();
     void setLogFilePath(const String& path);
 
     // Data references to update
-    void setSensorHistories(SensorHistory* histories, int count);
-    void setEventHistories(EventHistory* events, int count);
+    void setLogBuffer(RingBuffer* buffer);
+    RingBuffer* getLogBuffer() { return logBuffer; }
+    void setSensorMetadata(SensorMetadata* metadata, int count);
+    void setEventMetadata(EventMetadata* metadata, int count);
     void setSettings(SettingsParameter* settings, int count);
 
-    // Callbacks for manual controls (to tie into your business logic)
-    void setControlCallbacks(void (*onFan)(bool), void (*onIrrigation)(bool), void (*onSides)(bool));
+    // Callbacks for manual controls are now embedded in EventMetadata!
 
 private:
     FastBot2 bot;
     BotOperatingMode operatingMode;
     
-    SensorHistory* sensorHistories;
+    RingBuffer* logBuffer;
+    
+    SensorMetadata* sensorMetadata;
     int numSensors;
     
-    EventHistory* eventHistories;
+    EventMetadata* eventMetadata;
     int numEvents;
     
     SettingsParameter* settings;
     int numSettings;
-
-    // Callbacks
-    void (*fanCallback)(bool);
-    void (*irrigationCallback)(bool);
-    void (*sidesCallback)(bool);
 
     // Context state
     uint32_t dashboardMsgID;
