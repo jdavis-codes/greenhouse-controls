@@ -71,7 +71,18 @@ If you are not using PlatformIO, open one of the sketch folders directly in the 
 - `telegram-forwarder/telegram-forwarder.ino`
 - `lora-sender/lora-sender.ino`
 
-Install the required libraries in Arduino IDE as needed. PlatformIO users get them through `lib_deps` in `platformio.ini`.
+Install the required libraries in Arduino IDE Library Manager as needed. PlatformIO users get them through `lib_deps` in `platformio.ini`. For full installation instructions and a detailed description of each library, refer to the [Arduino IDE Environment Setup Tutorial](Tutorial/01-environment-setup.md).
+
+## Required Libraries
+
+All sketches share a common pool of powerful open source libraries. Below is a quick catalog:
+
+- **[DHTStable](https://github.com/RobTillaart/DHTstable)** by Rob Tillaart: Stable, non-blocking reads for DHT temperature/humidity sensors.
+- **[LiquidCrystal I2C](https://github.com/johnrickman/LiquidCrystal_I2C)** by Frank de Brabander / Marco Schwartz: Easy I2C manipulation for the 20x4 LCD screens.
+- **[RTClib](https://github.com/adafruit/RTClib)** by Adafruit: Excellent cross-platform Real-Time Clock abstractions and `DateTime` primitives.
+- **[FastBot2](https://github.com/GyverLibs/FastBot2)** by AlexGyver: Next-generation, high-performance Telegram bot framework for the ESP32 dashboards.
+- **[TelegramSerial](https://github.com/toastmanAu/TelegramSerial)** by toastmanAu: A stateless drop-in `Serial` replacement that forwards messages to telegram over WiFi.
+- **[RYLR_LoRaAT](https://github.com/jmwanderer/RYLR_LoRaAT)** by James Wanderer: Serial driver bridging AT commands to workable C++ structs for Reyax LoRa radios.
 
 ## Secrets
 
