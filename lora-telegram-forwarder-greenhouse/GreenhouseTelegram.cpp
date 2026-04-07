@@ -1,12 +1,14 @@
 #include "GreenhouseTelegram.h"
 
+#include <ctype.h>
+#include <stdlib.h>
+
 GreenhouseTelegramBot::GreenhouseTelegramBot(const String& token, BotOperatingMode mode) 
-    : bot(token), operatingMode(mode), targetChatID(0LL), dashboardLiveView(false), logFilePath("grnhs.txt"), dashboardMsgID(0), activeConfigIndex(-1), awaitValue(false),
+    : bot(token), operatingMode(mode), targetChatID(0LL), dashboardLiveView(false), logFilePath("grnhs.txt"), dashboardMsgID(0), activeConfigIndex(-1),
     logBuffer(nullptr), sensorMetadata(nullptr), numSensors(0), eventMetadata(nullptr), numEvents(0), settings(nullptr), numSettings(0),
     deviceBootMillis(0), lastLoRaRxMillis(0), linkConnectedSinceMillis(0), lastRssi(0), lastSnr(0) {}
 
-void GreenhouseTelegramBot::begin(const char* ssid, const char* pass, 
-                                  SensorMetadata* sensors, int numS,
+void GreenhouseTelegramBot::begin(SensorMetadata* sensors, int numS,
                                   EventMetadata* events, int numE,
                                   SettingsParameter* params, int numP) {
     deviceBootMillis = millis();
@@ -18,16 +20,6 @@ void GreenhouseTelegramBot::begin(const char* ssid, const char* pass,
     } else {
         Serial.println("PSRAM init failed! Bot will lack history.");
     }                                  
-    
-    // Start WiFi
-    Serial.print("Connecting to WiFi ");
-    WiFi.begin(ssid, pass);
-    while (WiFi.status() != WL_CONNECTED)
-    {
-        delay(500);
-        Serial.print(".");
-    }
-    Serial.println("\nWiFi connected!");
 
     // Apply metadata
     setSensorMetadata(sensors, numS);
@@ -41,6 +33,7 @@ void GreenhouseTelegramBot::begin(const char* ssid, const char* pass,
 void GreenhouseTelegramBot::setup() {
     bot.attachUpdate([this](fb::Update& u) { handleUpdate(u); });
     bot.setPollMode(fb::Poll::Long, 60000);
+    installBotCommands();
 }
 
 void GreenhouseTelegramBot::tick() {
@@ -85,6 +78,19 @@ void GreenhouseTelegramBot::setEventMetadata(EventMetadata* metadata, int count)
 void GreenhouseTelegramBot::setSettings(SettingsParameter* p, int count) {
     settings = p;
     numSettings = count;
+}
+
+void GreenhouseTelegramBot::installBotCommands() {
+    fb::MyCommands cmds;
+    cmds.addCommand("dashboard", "Show the current greenhouse status");
+    cmds.addCommand("controls", "List manual control commands");
+    cmds.addCommand("control", "Send /control <device> <state>");
+    cmds.addCommand("config", "Show or set /config <parameter> <value>");
+    cmds.addCommand("graph", "Send the SVG history graph");
+    cmds.addCommand("download", "Download the current log file");
+    cmds.addCommand("help", "Show command formatting help");
+    cmds.addCommand("commands", "Show the full command list");
+    bot.setMyCommands(cmds, false);
 }
 
 String GreenhouseTelegramBot::formatTime(DateTime dt) {
@@ -151,6 +157,136 @@ String GreenhouseTelegramBot::buildDashboardStatusHeader() const {
     return header;
 }
 
+String GreenhouseTelegramBot::buildGuideText() const {
+    return String(
+        "<b>User Guide</b>\n"
+        "<i>Quick reference for the greenhouse bot.</i>\n\n"
+        "<b>/dashboard</b>\n"
+        "Shows the current dashboard snapshot with link health, actuator history, and sensor sparklines.\n\n"
+        "<b>/controls</b>\n"
+        "Lists manual control commands. Use <code>/control fan on</code>, <code>/control sides down</code>, or <code>/control irrigation off</code>.\n\n"
+        "<b>/config</b>\n"
+        "Shows current setpoints and usage. Set values with <code>/config temp1 82.5</code> or <code>/config moist 55</code>.\n\n"
+        "<b>/graph</b>\n"
+        "Generates a high-resolution SVG plot from recent history and sends it as a file.\n\n"
+        "<b>/download</b>\n"
+        "Sends the current SD log file to Telegram for review or backup.\n\n"
+        "<b>Status Header</b>\n"
+        "Displays LoRa quality, RSSI, SNR, connection uptime, and device uptime.\n\n"
+        "<b>Group Chats</b>\n"
+        "Commands with bot mentions like <code>/dashboard@YourBotName</code> are accepted automatically.");
+}
+
+String GreenhouseTelegramBot::buildCommandsText() const {
+    return String(
+        "<b>Available Commands</b>\n"
+        "<code>/dashboard</code> or <code>/display</code> - show current dashboard snapshot\n"
+        "<code>/controls</code> - list manual control commands\n"
+        "<code>/control &lt;device&gt; &lt;state&gt;</code> - control fan, sides, or irrigation\n"
+        "<code>/config</code> - show current parameters and usage\n"
+        "<code>/config &lt;parameter&gt; &lt;value&gt;</code> - set a configuration value\n"
+        "<code>/graph</code> - generate and send the SVG plot\n"
+        "<code>/download</code> - send the log file\n"
+        "<code>/help</code> - formatting help and workflow notes\n"
+        "<code>/commands</code> - show this command list");
+}
+
+String GreenhouseTelegramBot::buildConfigText() const {
+    String text = "<b>Config Parameters</b>\n";
+    text += "Use <code>/config &lt;parameter&gt; &lt;value&gt;</code>\n\n";
+    for (int i = 0; i < numSettings; i++) {
+        String key = settings[i].key;
+        key.toLowerCase();
+        text += "<code>" + key + "</code> - ";
+        text += settings[i].name + " = ";
+        text += String(*(settings[i].valueRef), 1) + settings[i].unit + "\n";
+    }
+    text += "\nExamples:\n";
+    text += "<code>/config temp1 82.5</code>\n";
+    text += "<code>/config moist 55</code>";
+    return text;
+}
+
+String GreenhouseTelegramBot::buildControlsText() const {
+    String text = "<b>Manual Controls</b>\n";
+    text += "Use <code>/control &lt;device&gt; &lt;state&gt;</code>\n\n";
+    for (int i = 0; i < numEvents; i++) {
+        String name = eventMetadata[i].name;
+        String device = normalizeToken(name);
+        String onState = eventMetadata[i].onStr;
+        String offState = eventMetadata[i].offStr;
+        onState.toLowerCase();
+        offState.toLowerCase();
+        text += "<code>/control " + device + " " + onState + "</code> or ";
+        text += "<code>/control " + device + " " + offState + "</code>\n";
+    }
+    text += "\nAliases: <code>fan</code>, <code>sides</code>, <code>irrigation</code>, <code>water</code>.";
+    return text;
+}
+
+String GreenhouseTelegramBot::extractCommandName(const String& text, String& args) const {
+    String trimmed = text;
+    trimmed.trim();
+    args = "";
+    if (!trimmed.length()) return String();
+
+    int spaceIdx = trimmed.indexOf(' ');
+    String command = (spaceIdx == -1) ? trimmed : trimmed.substring(0, spaceIdx);
+    if (spaceIdx != -1) {
+        args = trimmed.substring(spaceIdx + 1);
+        args.trim();
+    }
+
+    if (!command.startsWith("/")) return command;
+
+    int mentionIdx = command.indexOf('@');
+    if (mentionIdx != -1) {
+        command = command.substring(0, mentionIdx);
+    }
+    command.toLowerCase();
+    return command;
+}
+
+String GreenhouseTelegramBot::normalizeToken(const String& text) const {
+    String token;
+    token.reserve(text.length());
+    for (unsigned int i = 0; i < text.length(); i++) {
+        char ch = text[i];
+        if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) {
+            token += (char)tolower(ch);
+        }
+    }
+    return token;
+}
+
+int GreenhouseTelegramBot::findSettingIndex(const String& token) const {
+    String normalized = normalizeToken(token);
+    for (int i = 0; i < numSettings; i++) {
+        String key = normalizeToken(settings[i].key);
+        String name = normalizeToken(settings[i].name);
+        if (normalized == key || normalized == name || name.indexOf(normalized) >= 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int GreenhouseTelegramBot::findEventIndex(const String& token) const {
+    String normalized = normalizeToken(token);
+    for (int i = 0; i < numEvents; i++) {
+        String name = normalizeToken(eventMetadata[i].name);
+        if (normalized == name || name.indexOf(normalized) >= 0) {
+            return i;
+        }
+    }
+    if (normalized == "water") {
+        for (int i = 0; i < numEvents; i++) {
+            if (normalizeToken(eventMetadata[i].name).indexOf("irrigation") >= 0) return i;
+        }
+    }
+    return -1;
+}
+
 void GreenhouseTelegramBot::handleUpdate(fb::Update& u) {
     if (u.isQuery()) {
         handleQuery(u);
@@ -161,34 +297,180 @@ void GreenhouseTelegramBot::handleUpdate(fb::Update& u) {
 
 void GreenhouseTelegramBot::handleMessage(fb::Update& u) {
     String text = u.message().text();
-    fb::ID chatID = u.message().chat().id();
+    auto chat = u.message().chat();
+    fb::ID chatID = chat.id();
 
-    // Context handler
-    if (awaitValue && activeConfigIndex >= 0 && activeConfigIndex < numSettings) {
-        float newVal = text.toFloat(); // Fallback if nan
-        *(settings[activeConfigIndex].valueRef) = newVal;
-        if (settingChangedCb) settingChangedCb(settings[activeConfigIndex].key, newVal);
-
-        fb::Message msg("✅ " + settings[activeConfigIndex].name + " updated to: " + String(newVal, 1) + settings[activeConfigIndex].unit, chatID);
-        bot.sendMessage(msg);
-
-        // Return to settings menu
-        sendConfigMainMenu(chatID);
-        awaitValue = false;
-        return; 
+    auto chatType = chat.type();
+    const char* chatTypeStr = "unknown";
+    switch (chatType) {
+        case decltype(chatType)::privateChat:
+            chatTypeStr = "private";
+            break;
+        case decltype(chatType)::group:
+            chatTypeStr = "group";
+            break;
+        case decltype(chatType)::supergroup:
+            chatTypeStr = "supergroup";
+            break;
+        case decltype(chatType)::channel:
+            chatTypeStr = "channel";
+            break;
     }
 
-    if (text == "/start") {
-        if (operatingMode == MODE_DASHBOARD) {
+    Serial.println("Received message: " + text);
+    Serial.println("Chat properties:");
+    Serial.println("  id: " + String(chat.id().c_str()));
+    Serial.println("  type: " + String(chatTypeStr));
+    Serial.println("  title: " + String(chat.title().c_str()));
+    Serial.println("  username: " + String(chat.username().c_str()));
+    Serial.println("  first_name: " + String(chat.firstName().c_str()));
+    Serial.println("  last_name: " + String(chat.lastName().c_str()));
+    Serial.println("  description: " + String(chat.description().c_str()));
+    Serial.println(String("  is_forum: ") + (chat.isForum() ? "true" : "false"));
+
+    String args;
+    String command = extractCommandName(text, args);
+    bool isGroupChat = chatType == decltype(chatType)::group || chatType == decltype(chatType)::supergroup;
+
+    if (operatingMode == MODE_DASHBOARD) {
+        if (command == "/start") {
             targetChatID = chatID;
             sendDashboardMainMenu(chatID);
-        } else {
-            fb::Message msg("Welcome to Greenhouse Control! Use /dashboard to start.", chatID);
-            bot.sendMessage(msg);
+        } else if (command == "/dashboard" || command == "/display" || text == "Live Dashboard") {
+            targetChatID = chatID;
+            sendDashboardMainMenu(chatID);
         }
-    } else if (text == "/dashboard" || text == "Live Dashboard") {
+        return;
+    }
+
+    if (isGroupChat && !command.startsWith("/")) {
+        return;
+    }
+
+    if (command == "/start") {
+        fb::Message msg("Welcome to Greenhouse Control. Use /commands for the command list or /help for usage examples.", chatID);
+        msg.mode = fb::Message::Mode::HTML;
+        bot.sendMessage(msg, false);
+        return;
+    }
+    if (command == "/commands") {
+        fb::Message msg(buildCommandsText(), chatID);
+        msg.mode = fb::Message::Mode::HTML;
+        bot.sendMessage(msg, false);
+        return;
+    }
+    if (command == "/help" || command == "/guide") {
+        fb::Message msg(buildGuideText(), chatID);
+        msg.mode = fb::Message::Mode::HTML;
+        bot.sendMessage(msg, false);
+        return;
+    }
+    if (command == "/dashboard" || command == "/display" || command == "/status") {
         targetChatID = chatID;
-        sendDashboardMainMenu(chatID);
+        sendUnicodeGraph(chatID);
+        return;
+    }
+    if (command == "/graph") {
+        sendSvgGraph(chatID);
+        return;
+    }
+    if (command == "/download") {
+        sendLogFile(chatID);
+        return;
+    }
+    if (command == "/controls") {
+        fb::Message msg(buildControlsText(), chatID);
+        msg.mode = fb::Message::Mode::HTML;
+        bot.sendMessage(msg, false);
+        return;
+    }
+    if (command == "/control") {
+        int splitIdx = args.indexOf(' ');
+        if (splitIdx == -1) {
+            fb::Message msg(buildControlsText(), chatID);
+            msg.mode = fb::Message::Mode::HTML;
+            bot.sendMessage(msg, false);
+            return;
+        }
+
+        String deviceToken = args.substring(0, splitIdx);
+        String stateToken = args.substring(splitIdx + 1);
+        deviceToken.trim();
+        stateToken.trim();
+        stateToken = normalizeToken(stateToken);
+
+        int eventIdx = findEventIndex(deviceToken);
+        if (eventIdx < 0 || !eventMetadata[eventIdx].controlCallback) {
+            bot.sendMessage(fb::Message("Unknown control. Use /controls to see valid devices.", chatID), false);
+            return;
+        }
+
+        String onToken = normalizeToken(eventMetadata[eventIdx].onStr);
+        String offToken = normalizeToken(eventMetadata[eventIdx].offStr);
+        bool state = false;
+        bool valid = false;
+        if (stateToken == "1" || stateToken == "on" || stateToken == "true" || stateToken == onToken) {
+            state = true;
+            valid = true;
+        } else if (stateToken == "0" || stateToken == "off" || stateToken == "false" || stateToken == offToken) {
+            state = false;
+            valid = true;
+        }
+
+        if (!valid) {
+            bot.sendMessage(fb::Message("Unknown control state. Use on/off, 1/0, or the device labels shown by /controls.", chatID), false);
+            return;
+        }
+
+        eventMetadata[eventIdx].controlCallback(state);
+        bot.sendMessage(fb::Message(String("Command sent: ") + eventMetadata[eventIdx].name + " -> " + (state ? eventMetadata[eventIdx].onStr : eventMetadata[eventIdx].offStr), chatID), false);
+        return;
+    }
+    if (command == "/config") {
+        if (!args.length()) {
+            fb::Message msg(buildConfigText(), chatID);
+            msg.mode = fb::Message::Mode::HTML;
+            bot.sendMessage(msg, false);
+            return;
+        }
+
+        int splitIdx = args.indexOf(' ');
+        if (splitIdx == -1) {
+            fb::Message msg(buildConfigText(), chatID);
+            msg.mode = fb::Message::Mode::HTML;
+            bot.sendMessage(msg, false);
+            return;
+        }
+
+        String paramToken = args.substring(0, splitIdx);
+        String valueToken = args.substring(splitIdx + 1);
+        paramToken.trim();
+        valueToken.trim();
+
+        int settingIdx = findSettingIndex(paramToken);
+        if (settingIdx < 0) {
+            bot.sendMessage(fb::Message("Unknown parameter. Use /config to see available keys.", chatID), false);
+            return;
+        }
+
+        char* endPtr = nullptr;
+        float value = strtof(valueToken.c_str(), &endPtr);
+        if (endPtr == valueToken.c_str() || (endPtr && *endPtr != '\0')) {
+            bot.sendMessage(fb::Message("Invalid value. Example: /config temp1 82.5", chatID), false);
+            return;
+        }
+
+        *(settings[settingIdx].valueRef) = value;
+        if (settingChangedCb) settingChangedCb(settings[settingIdx].key, value);
+
+        fb::Message msg("✅ " + settings[settingIdx].name + " updated to " + String(value, 1) + settings[settingIdx].unit, chatID);
+        msg.mode = fb::Message::Mode::HTML;
+        bot.sendMessage(msg, false);
+        return;
+    }
+
+    if (command.startsWith("/")) {
+        bot.sendMessage(fb::Message("Unknown command. Use /commands to see the available commands.", chatID), false);
     }
 }
 
@@ -217,6 +499,11 @@ void GreenhouseTelegramBot::handleQuery(fb::Update& u) {
     if (qData == "menu_svg") {
         bot.answerCallbackQuery(u.query().id());
         sendSvgMenu(chatID, msgID);
+        return;
+    }
+    if (qData == "menu_guide") {
+        bot.answerCallbackQuery(u.query().id());
+        sendGuideMenu(chatID, msgID);
         return;
     }
     if (qData == "dl_logs") {
@@ -390,6 +677,35 @@ void GreenhouseTelegramBot::sendConfigEditMenu(fb::ID chatID, uint32_t msgID, in
     bot.editText(msg, false);
 }
 
+void GreenhouseTelegramBot::sendGuideMenu(fb::ID chatID, uint32_t editMsgID) {
+    dashboardLiveView = false;
+
+    String txt =
+        "<b>User Guide</b>\n"
+        "<i>Quick reference for the greenhouse dashboard.</i>\n\n"
+        "<b>Display</b>\n"
+        "Shows live link health, actuator history, and sensor sparklines. Use this as the main status view.\n\n"
+        "<b>Controls</b>\n"
+        "Sends manual LoRa commands for fan, sides, and irrigation. Use for testing or temporary overrides.\n\n"
+        "<b>Set Points</b>\n"
+        "Adjusts target temperatures and moisture thresholds. Tap a parameter, then use +/- buttons to change it.\n\n"
+        "<b>Download Logs</b>\n"
+        "Sends the current SD log file to Telegram for offline review or backup.\n\n"
+        "<b>SVG Plot</b>\n"
+        "Generates a high-resolution plot from recent history and sends it as a file. Best for detailed trend review.\n\n"
+        "<b>Status Header</b>\n"
+        "The top line shows LoRa quality, RSSI, SNR, connection uptime, and device uptime. If no packets arrive for a while, the link is marked disconnected.\n\n"
+        "<b>Typical Workflow</b>\n"
+        "Check Display for health, use Set Points for threshold changes, use Controls for manual tests, and export logs or SVG when you need history.";
+
+    fb::InlineMenu menu("🔙 Back", "dash_back");
+
+    fb::TextEdit msg(txt, editMsgID, chatID);
+    msg.mode = fb::Message::Mode::HTML;
+    msg.setInlineMenu(menu);
+    bot.editText(msg, false);
+}
+
 uint32_t GreenhouseTelegramBot::sendUnicodeGraph(fb::ID chatID, uint32_t editMsgID) {
     if (!logBuffer || numSensors == 0) return editMsgID; // Can't do anything without struct refs
 
@@ -525,10 +841,10 @@ uint32_t GreenhouseTelegramBot::sendUnicodeGraph(fb::ID chatID, uint32_t editMsg
         msgText += bodyText;
     } // end logBuffer parsing
 
-    fb::InlineMenu menu("[Controls];[Set Points];[Display]\n"
-                        "[Download Logs];[SVG Plot]", 
+    fb::InlineMenu menu("Controls;Set Points;Display\n"
+                        "Download;Graph;Guide", 
                         "menu_controls;menu_setpoints;menu_display;"
-                        "dl_logs;menu_svg");
+                        "dl_logs;menu_svg;menu_guide");
 
     if (editMsgID == 0) {
         fb::Message msg(msgText, chatID);

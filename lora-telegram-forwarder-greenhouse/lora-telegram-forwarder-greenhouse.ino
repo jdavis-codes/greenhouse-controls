@@ -17,7 +17,7 @@ unsigned long activityBlinkUntil = 0;
 const unsigned long ACTIVITY_BLINK_MS = 120;
 
 RingBuffer* logBuffer = nullptr;
-GreenhouseTelegramBot telBot(BOT_TOKEN, MODE_DASHBOARD);
+GreenhouseTelegramBot telBot(BOT_TOKEN, MODE_CHAT);
 
 // Data state cache mostly for the active setting UI, though the UI relies heavily on log entry.
 float grnhouseTargetTemp1 = 80.0;
@@ -26,33 +26,10 @@ float grnhouseTempDelta = 4.0;
 int soilTargetMoisture = 50;
 int soilMoistureDelta = 10;
 
-// Callbacks that push commands back OUT over LoRa to the sender node
-void onFanTelegramTrigger(bool state) {
-    char payload[32];
-    snprintf(payload, sizeof(payload), "C,FAN,%d", state ? 1 : 0);
-    rylr.startTxMessage();
-    rylr.addTxData(payload);
-    rylr.sendTxMessage(REMOTE_ADDRESS);
-    Serial.printf("LoRa TX Command: %s\n", payload);
-}
-
-void onSidesTelegramTrigger(bool state) {
-    char payload[32];
-    snprintf(payload, sizeof(payload), "C,SIDES,%d", state ? 1 : 0);
-    rylr.startTxMessage();
-    rylr.addTxData(payload);
-    rylr.sendTxMessage(REMOTE_ADDRESS);
-    Serial.printf("LoRa TX Command: %s\n", payload);
-}
-
-void onIrrigationTelegramTrigger(bool state) {
-    char payload[32];
-    snprintf(payload, sizeof(payload), "C,WATER,%d", state ? 1 : 0);
-    rylr.startTxMessage();
-    rylr.addTxData(payload);
-    rylr.sendTxMessage(REMOTE_ADDRESS);
-    Serial.printf("LoRa TX Command: %s\n", payload);
-}
+// Forward declare callbacks
+void onFanTelegramTrigger(bool state);
+void onSidesTelegramTrigger(bool state);
+void onIrrigationTelegramTrigger(bool state);
 
 // Map settings mirroring the greenhouse controller script
 SensorMetadata activeSensors[] = {
@@ -77,42 +54,47 @@ SettingsParameter botSettings[] = {
     {"📉", "Moisture Delta", "MDELTA", (float *)&soilMoistureDelta, "%"}
 };
 
-void onSettingChanged(const char* key, float value) {
-    char payload[32];
-    snprintf(payload, sizeof(payload), "S,%s,%.1f", key, value);
-    rylr.startTxMessage();
-    rylr.addTxData(payload);
-    rylr.sendTxMessage(REMOTE_ADDRESS);
-    Serial.printf("LoRa TX Setting: %s\n", payload);
-}
+void setup() {
+    Serial.begin(115200);
+    delay(2000);
 
-void showRoleLedGREEN() {
-    digitalWrite(LEDR, HIGH);
-    digitalWrite(LEDG, LOW);
-    digitalWrite(LEDB, HIGH);
-}
+    pinMode(LEDR, OUTPUT);
+    pinMode(LEDG, OUTPUT);
+    pinMode(LEDB, OUTPUT);
+    showRoleLedGREEN();
 
-void blinkActivityLed() {
-    activityBlinkUntil = millis() + ACTIVITY_BLINK_MS;
-    digitalWrite(LEDR, HIGH);
-    digitalWrite(LEDG, HIGH);
-    digitalWrite(LEDB, LOW); // Blink blue
-}
+    // Start LoRa UART
+    Serial1.begin(115200, SERIAL_8N1, LORA_RX, LORA_TX);
+    rylr.setSerial(&Serial1);
 
-void updateStatusLed() {
-    if (millis() >= activityBlinkUntil) {
-        showRoleLedGREEN();
+    int result = rylr.checkStatus();
+    Serial.printf("LoRa status: %d\n", result);
+
+    rylr.setAddress(LOCAL_ADDRESS);
+    rylr.setRFPower(14);
+
+        // Start WiFi
+    Serial.print("Connecting to WiFi ");
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    while (WiFi.status() != WL_CONNECTED)
+    {
+        delay(500);
+        Serial.print(".");
     }
+    Serial.println("\nWiFi connected!");
+
+    // Initialize telegram bot which handles WiFi and the PSRAM RingBuffer setup
+    telBot.begin(activeSensors, activeEvents, botSettings);
+    telBot.onSettingChanged(onSettingChanged);
+    logBuffer = telBot.getLogBuffer();
+
+    Serial.println("Greenhouse LoRa Telegram Forwarder ready.");
 }
 
-uint32_t getUnixTime() {
-    // FastBot automatically synchronizes with NTP servers during operation.
-    // If not connected to WiFi, we fall back to elapsed millis relative to an arbitrary boot time 
-    // OR whatever hardware RTC time is. The RTClib's DateTime class provides nice formatting 
-    // options entirely in software if initialized with a uint32_t unix timestamp.
-    time_t now;
-    time(&now);
-    return (uint32_t)now;
+void loop() {
+    telBot.tick();
+    receiveAndProcessLoRa();
+    updateStatusLed();
 }
 
 void processIncomingData(const RYLR_LoRaAT_Message *message) {
@@ -163,35 +145,68 @@ void receiveAndProcessLoRa() {
     processIncomingData(message);
 }
 
-void setup() {
-    Serial.begin(115200);
-    delay(2000);
-
-    pinMode(LEDR, OUTPUT);
-    pinMode(LEDG, OUTPUT);
-    pinMode(LEDB, OUTPUT);
-    showRoleLedGREEN();
-
-    // Start LoRa UART
-    Serial1.begin(115200, SERIAL_8N1, LORA_RX, LORA_TX);
-    rylr.setSerial(&Serial1);
-
-    int result = rylr.checkStatus();
-    Serial.printf("LoRa status: %d\n", result);
-
-    rylr.setAddress(LOCAL_ADDRESS);
-    rylr.setRFPower(14);
-
-    // Initialize telegram bot which handles WiFi and the PSRAM RingBuffer setup
-    telBot.begin(WIFI_SSID, WIFI_PASSWORD, activeSensors, activeEvents, botSettings);
-    telBot.onSettingChanged(onSettingChanged);
-    logBuffer = telBot.getLogBuffer();
-
-    Serial.println("Greenhouse LoRa Telegram Forwarder ready.");
+void onSettingChanged(const char* key, float value) {
+    char payload[32];
+    snprintf(payload, sizeof(payload), "S,%s,%.1f", key, value);
+    rylr.startTxMessage();
+    rylr.addTxData(payload);
+    rylr.sendTxMessage(REMOTE_ADDRESS);
+    Serial.printf("LoRa TX Setting: %s\n", payload);
 }
 
-void loop() {
-    telBot.tick();
-    receiveAndProcessLoRa();
-    updateStatusLed();
+// Callbacks that push commands back OUT over LoRa to the sender node
+void onFanTelegramTrigger(bool state) {
+    char payload[32];
+    snprintf(payload, sizeof(payload), "C,FAN,%d", state ? 1 : 0);
+    rylr.startTxMessage();
+    rylr.addTxData(payload);
+    rylr.sendTxMessage(REMOTE_ADDRESS);
+    Serial.printf("LoRa TX Command: %s\n", payload);
+}
+
+void onSidesTelegramTrigger(bool state) {
+    char payload[32];
+    snprintf(payload, sizeof(payload), "C,SIDES,%d", state ? 1 : 0);
+    rylr.startTxMessage();
+    rylr.addTxData(payload);
+    rylr.sendTxMessage(REMOTE_ADDRESS);
+    Serial.printf("LoRa TX Command: %s\n", payload);
+}
+
+void onIrrigationTelegramTrigger(bool state) {
+    char payload[32];
+    snprintf(payload, sizeof(payload), "C,WATER,%d", state ? 1 : 0);
+    rylr.startTxMessage();
+    rylr.addTxData(payload);
+    rylr.sendTxMessage(REMOTE_ADDRESS);
+    Serial.printf("LoRa TX Command: %s\n", payload);
+}
+
+void showRoleLedGREEN() {
+    digitalWrite(LEDR, HIGH);
+    digitalWrite(LEDG, LOW);
+    digitalWrite(LEDB, HIGH);
+}
+
+void blinkActivityLed() {
+    activityBlinkUntil = millis() + ACTIVITY_BLINK_MS;
+    digitalWrite(LEDR, HIGH);
+    digitalWrite(LEDG, HIGH);
+    digitalWrite(LEDB, LOW); // Blink blue
+}
+
+void updateStatusLed() {
+    if (millis() >= activityBlinkUntil) {
+        showRoleLedGREEN();
+    }
+}
+
+uint32_t getUnixTime() {
+    // FastBot automatically synchronizes with NTP servers during operation.
+    // If not connected to WiFi, we fall back to elapsed millis relative to an arbitrary boot time 
+    // OR whatever hardware RTC time is. The RTClib's DateTime class provides nice formatting 
+    // options entirely in software if initialized with a uint32_t unix timestamp.
+    time_t now;
+    time(&now);
+    return (uint32_t)now;
 }

@@ -50,18 +50,16 @@ public:
     GreenhouseTelegramBot(const String& token, BotOperatingMode mode);
     
     // Convenience all-in-one setup that inits PSRAM and creates log buffer
-    void begin(const char* ssid, const char* pass, 
-               SensorMetadata* sensors, int numS,
+    void begin(SensorMetadata* sensors, int numS,
                EventMetadata* events, int numE,
                SettingsParameter* params, int numP);
 
     // Elegant C++ template wrapper to deduce array sizes automatically
     template <size_t numS, size_t numE, size_t numP>
-    void begin(const char* ssid, const char* pass, 
-               SensorMetadata (&sensors)[numS],
+    void begin(SensorMetadata (&sensors)[numS],
                EventMetadata (&events)[numE],
                SettingsParameter (&params)[numP]) {
-        begin(ssid, pass, sensors, numS, events, numE, params, numP);
+        begin(&sensors[0], (int)numS, &events[0], (int)numE, &params[0], (int)numP);
     }
 
     void setup();
@@ -102,7 +100,6 @@ private:
     bool dashboardLiveView;
     String logFilePath;
     int activeConfigIndex;
-    bool awaitValue;
     String cachedDashboardBody;
     unsigned long deviceBootMillis;
     unsigned long lastLoRaRxMillis;
@@ -120,6 +117,7 @@ private:
     void sendControlsMenu(fb::ID chatID, uint32_t editMsgID);
     void sendConfigMainMenu(fb::ID chatID, uint32_t editMsgID = 0);
     void sendConfigEditMenu(fb::ID chatID, uint32_t msgID, int paramIndex);
+    void sendGuideMenu(fb::ID chatID, uint32_t editMsgID);
     void sendSvgMenu(fb::ID chatID, uint32_t editMsgID);
     
     // Graph generation
@@ -128,12 +126,21 @@ private:
     void sendSvgGraph(fb::ID chatID);
     
     // Helpers
+    void installBotCommands();
     String formatTime(DateTime dt);
     String formatDuration(unsigned long elapsedMs) const;
     bool isLinkConnected() const;
     const char* getLinkQualityLabel() const;
     const char* getLinkQualityBar() const;
     String buildDashboardStatusHeader() const;
+    String buildGuideText() const;
+    String buildCommandsText() const;
+    String buildConfigText() const;
+    String buildControlsText() const;
+    String extractCommandName(const String& text, String& args) const;
+    String normalizeToken(const String& text) const;
+    int findSettingIndex(const String& token) const;
+    int findEventIndex(const String& token) const;
 };
 
 #endif // GREENHOUSE_TELEGRAM_H
