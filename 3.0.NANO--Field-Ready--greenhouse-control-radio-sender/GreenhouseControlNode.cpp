@@ -11,6 +11,16 @@
 
 #include "RYLR_LoRaAT_Software_Serial.h"
 
+#define GHNODE_DEBUG 1
+
+#if GHNODE_DEBUG
+    #define GHDBG(...)   Serial.print(__VA_ARGS__)
+    #define GHDBGLN(...) Serial.println(__VA_ARGS__)
+#else
+    #define GHDBG(...)
+    #define GHDBGLN(...)
+#endif
+
 namespace {
 constexpr uint32_t PERSIST_MAGIC = 0x47484431UL;
 
@@ -91,19 +101,33 @@ void GreenhouseControlNode::begin(RYLR_LoRaAT_Software_Serial* radioLink,
                                   uint16_t remoteNodeAddress,
                                   telegram_data_pipe dataPipe,
                                   Stream* serialPipe) {
+    GHDBGLN(F("[GHNODE] begin(): start"));
     radio = radioLink;
     remoteAddress = remoteNodeAddress;
     activeDataPipe = dataPipe;
     serialDataPipe = serialPipe;
     serialReadIndex = 0;
 
+    GHDBG(F("[GHNODE] begin(): pipe="));
+    GHDBGLN(activeDataPipe == uart_rx_tx ? F("uart") : F("radio"));
+    GHDBG(F("[GHNODE] begin(): remote="));
+    GHDBGLN(remoteAddress);
+    GHDBG(F("[GHNODE] begin(): radio ptr="));
+    GHDBGLN((uintptr_t)radio);
+    GHDBG(F("[GHNODE] begin(): serial ptr="));
+    GHDBGLN((uintptr_t)serialDataPipe);
+
+    GHDBGLN(F("[GHNODE] begin(): loadPersistedState"));
     loadPersistedState();
 #ifndef DISABLE_NODE_ALERTS
     initializeEventAlertState();
     evaluateSensorAlerts();
 #endif
+    GHDBGLN(F("[GHNODE] begin(): sendFullStateSync"));
     sendFullStateSync();
+    GHDBGLN(F("[GHNODE] begin(): sendTelemetry"));
     sendTelemetry();
+    GHDBGLN(F("[GHNODE] begin(): done"));
 }
 
 bool GreenhouseControlNode::readLineFromSerial(char* buffer, size_t bufferLen) {
@@ -353,24 +377,37 @@ void GreenhouseControlNode::updateStatusLed(unsigned long now) {
 }
 
 void GreenhouseControlNode::sendPacket(const char* payload) {
-    if (!payload || !payload[0]) return;
+    if (!payload || !payload[0]) {
+        GHDBGLN(F("[GHNODE] sendPacket: empty payload"));
+        return;
+    }
+
+    GHDBG(F("[GHNODE] sendPacket: "));
+    GHDBGLN(payload);
 
     if (activeDataPipe == uart_rx_tx && serialDataPipe) {
         noteActivity(millis());
         serialDataPipe->println(payload);
+        GHDBGLN(F("[GHNODE] sendPacket: sent via UART"));
         return;
     }
 
-    if (!radio) return;
+    if (!radio) {
+        GHDBGLN(F("[GHNODE] sendPacket: radio is null"));
+        return;
+    }
 
     noteActivity(millis());
     radio->startTxMessage();
     radio->addTxData(payload);
-    radio->sendTxMessage(remoteAddress);
+    int result = radio->sendTxMessage(remoteAddress);
+    GHDBG(F("[GHNODE] sendPacket: radio result="));
+    GHDBGLN(result);
 }
 
 void GreenhouseControlNode::sendTelemetry() {
     if (!sensors || !events || sensorCount == 0 || eventCount == 0) {
+        GHDBGLN(F("[GHNODE] sendTelemetry: bindings not ready"));
         return;
     }
 
@@ -429,6 +466,9 @@ void GreenhouseControlNode::sendEventAlertSync(uint8_t eventIndex) {
 #endif
 
 void GreenhouseControlNode::sendFullStateSync() {
+    GHDBG(F("[GHNODE] sendFullStateSync: settings="));
+    GHDBGLN(settingCount);
+
     for (uint8_t i = 0; i < settingCount; i++) {
         if (!settings[i].key || !settings[i].valueRef) continue;
         sendSettingSync(settings[i].key, *(settings[i].valueRef));
