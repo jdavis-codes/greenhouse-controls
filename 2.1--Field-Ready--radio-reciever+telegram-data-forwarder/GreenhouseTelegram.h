@@ -105,10 +105,13 @@ public:
     void refreshDashboard();
     void setLogFilePath(const String& path);
     void updateLinkMetrics(int rssi, int snr);
-    void processAlerts(const LogEntry& entry);
     void sendTextToChat(const char* chatID, const String& text, bool html = false);
+    void broadcastAlertMessage(const String& text, bool html = true);
     void configureKnownChats(const char* personalChatID, const char* groupChatID);
     void sendBootAnnouncements();
+    bool syncSettingValue(const char* key, float value);
+    void syncSensorAlertConfig(int sensorIdx, bool lowEnabled, float lowThreshold, bool highEnabled, float highThreshold);
+    void syncEventAlertConfig(int eventIdx, bool enabled);
 
     // Data references to update
     void setLogBuffer(RingBuffer* buffer);
@@ -119,9 +122,13 @@ public:
 
     // Settings change callback (called whenever a setpoint is adjusted)
     void onSettingChanged(void (*cb)(const char* key, float value)) { settingChangedCb = cb; }
+    void onSensorAlertChanged(void (*cb)(int sensorIdx, AlertThresholdType thresholdType, bool enabled, float threshold)) { sensorAlertChangedCb = cb; }
+    void onEventAlertChanged(void (*cb)(int eventIdx, bool enabled)) { eventAlertChangedCb = cb; }
 
 private:
     void (*settingChangedCb)(const char* key, float value) = nullptr;
+    void (*sensorAlertChangedCb)(int sensorIdx, AlertThresholdType thresholdType, bool enabled, float threshold) = nullptr;
+    void (*eventAlertChangedCb)(int eventIdx, bool enabled) = nullptr;
     FastBot2 bot;
     BotOperatingMode operatingMode;
     

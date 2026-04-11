@@ -78,68 +78,6 @@ void GreenhouseTelegramBot::sendBootAnnouncements() {
     }
 }
 
-void GreenhouseTelegramBot::processAlerts(const LogEntry& entry) {
-    if (sensorAlerts && sensorMetadata) {
-        for (int i = 0; i < numSensors; i++) {
-            float value = entry.*(sensorMetadata[i].valueField);
-            SensorAlertConfig& alert = sensorAlerts[i];
-
-            if (alert.lowEnabled) {
-                bool triggered = value <= alert.lowThreshold;
-                if (triggered && !alert.lowActive) {
-                    String msg = "🚨 <b>Low Alert</b>\n";
-                    msg += sensorMetadata[i].name;
-                    msg += " dropped to <code>" + formatSensorReading(i, value) + "</code>\n";
-                    msg += "Threshold: <code>" + formatSensorReading(i, alert.lowThreshold) + "</code>";
-                    notifyAlertChats(msg);
-                }
-                alert.lowActive = triggered;
-            } else {
-                alert.lowActive = false;
-            }
-
-            if (alert.highEnabled) {
-                bool triggered = value >= alert.highThreshold;
-                if (triggered && !alert.highActive) {
-                    String msg = "🚨 <b>High Alert</b>\n";
-                    msg += sensorMetadata[i].name;
-                    msg += " rose to <code>" + formatSensorReading(i, value) + "</code>\n";
-                    msg += "Threshold: <code>" + formatSensorReading(i, alert.highThreshold) + "</code>";
-                    notifyAlertChats(msg);
-                }
-                alert.highActive = triggered;
-            } else {
-                alert.highActive = false;
-            }
-        }
-    }
-
-    if (eventAlerts && eventMetadata) {
-        for (int i = 0; i < numEvents; i++) {
-            bool state = entry.*(eventMetadata[i].stateField);
-            EventAlertConfig& alert = eventAlerts[i];
-
-            if (!alert.lastStateKnown) {
-                alert.lastStateKnown = true;
-                alert.lastState = state;
-                continue;
-            }
-
-            if (state != alert.lastState) {
-                if (alert.enabled) {
-                    String msg = "🔔 <b>Equipment Alert</b>\n";
-                    msg += eventMetadata[i].name;
-                    msg += " is now <code>";
-                    msg += state ? eventMetadata[i].onStr : eventMetadata[i].offStr;
-                    msg += "</code>";
-                    notifyAlertChats(msg);
-                }
-                alert.lastState = state;
-            }
-        }
-    }
-}
-
 void GreenhouseTelegramBot::updateLinkMetrics(int rssi, int snr) {
     bool wasConnected = isLinkConnected();
     lastRssi = rssi;
@@ -185,6 +123,38 @@ void GreenhouseTelegramBot::setEventMetadata(EventMetadata* metadata, int count)
 void GreenhouseTelegramBot::setSettings(SettingsParameter* p, int count) {
     settings = p;
     numSettings = count;
+}
+
+void GreenhouseTelegramBot::broadcastAlertMessage(const String& text, bool html) {
+    notifyAlertChats(text);
+}
+
+bool GreenhouseTelegramBot::syncSettingValue(const char* key, float value) {
+    if (!key) return false;
+
+    int settingIdx = findSettingIndex(key);
+    if (settingIdx < 0) return false;
+
+    *(settings[settingIdx].valueRef) = value;
+    return true;
+}
+
+void GreenhouseTelegramBot::syncSensorAlertConfig(int sensorIdx, bool lowEnabled, float lowThreshold, bool highEnabled, float highThreshold) {
+    if (!sensorAlerts || sensorIdx < 0 || sensorIdx >= numSensors) return;
+
+    sensorAlerts[sensorIdx].lowEnabled = lowEnabled;
+    sensorAlerts[sensorIdx].lowThreshold = lowThreshold;
+    sensorAlerts[sensorIdx].lowActive = false;
+    sensorAlerts[sensorIdx].highEnabled = highEnabled;
+    sensorAlerts[sensorIdx].highThreshold = highThreshold;
+    sensorAlerts[sensorIdx].highActive = false;
+}
+
+void GreenhouseTelegramBot::syncEventAlertConfig(int eventIdx, bool enabled) {
+    if (!eventAlerts || eventIdx < 0 || eventIdx >= numEvents) return;
+
+    eventAlerts[eventIdx].enabled = enabled;
+    eventAlerts[eventIdx].lastStateKnown = false;
 }
 
 void GreenhouseTelegramBot::installBotCommands() {
@@ -638,10 +608,12 @@ void GreenhouseTelegramBot::handleMessage(fb::Update& u) {
                 alert.lowEnabled = true;
                 alert.lowThreshold = value;
                 alert.lowActive = false;
+                if (sensorAlertChangedCb) sensorAlertChangedCb(pendingAlertSensorIndex, ALERT_THRESHOLD_LOW, true, value);
             } else {
                 alert.highEnabled = true;
                 alert.highThreshold = value;
                 alert.highActive = false;
+                if (sensorAlertChangedCb) sensorAlertChangedCb(pendingAlertSensorIndex, ALERT_THRESHOLD_HIGH, true, value);
             }
 
             String msgText = isLow ? "✅ Low alert set for " : "✅ High alert set for ";
@@ -957,6 +929,7 @@ void GreenhouseTelegramBot::handleQuery(fb::Update& u) {
         if (sensorAlerts && idx >= 0 && idx < numSensors) {
             sensorAlerts[idx].lowEnabled = false;
             sensorAlerts[idx].lowActive = false;
+            if (sensorAlertChangedCb) sensorAlertChangedCb(idx, ALERT_THRESHOLD_LOW, false, sensorAlerts[idx].lowThreshold);
             sendSensorAlertDetailMenu(chatID, msgID, idx);
         }
         return;
@@ -967,6 +940,7 @@ void GreenhouseTelegramBot::handleQuery(fb::Update& u) {
         if (sensorAlerts && idx >= 0 && idx < numSensors) {
             sensorAlerts[idx].highEnabled = false;
             sensorAlerts[idx].highActive = false;
+            if (sensorAlertChangedCb) sensorAlertChangedCb(idx, ALERT_THRESHOLD_HIGH, false, sensorAlerts[idx].highThreshold);
             sendSensorAlertDetailMenu(chatID, msgID, idx);
         }
         return;
@@ -976,6 +950,7 @@ void GreenhouseTelegramBot::handleQuery(fb::Update& u) {
         int idx = qData.substring(String("alert_event_on_").length()).toInt();
         if (eventAlerts && idx >= 0 && idx < numEvents) {
             eventAlerts[idx].enabled = true;
+            if (eventAlertChangedCb) eventAlertChangedCb(idx, true);
             sendEventAlertsMenu(chatID, msgID);
         }
         return;
@@ -985,6 +960,7 @@ void GreenhouseTelegramBot::handleQuery(fb::Update& u) {
         int idx = qData.substring(String("alert_event_off_").length()).toInt();
         if (eventAlerts && idx >= 0 && idx < numEvents) {
             eventAlerts[idx].enabled = false;
+            if (eventAlertChangedCb) eventAlertChangedCb(idx, false);
             sendEventAlertsMenu(chatID, msgID);
         }
         return;
