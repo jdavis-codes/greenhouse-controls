@@ -19,6 +19,7 @@ OUTPUTS:
 
 #include <Arduino.h>
 #include <SoftwareSerial.h>
+#include <Wire.h>
 #include "GreenhouseControlNode.h"
 #include "RYLR_LoRaAT_Software_Serial.h"
 
@@ -153,24 +154,42 @@ GreenhouseControlNode::SettingBinding settings[] = {
 
 void setup() {
 
-  // wait for Serial Monitor to connect. Needed for native USB port boards only:
+  // Avoid blocking forever on boards without native USB serial.
   Serial.begin(9600);
-  while (!Serial);
+  unsigned long serialWaitStart = millis();
+  while (!Serial && (millis() - serialWaitStart < 1500)) {
+  }
+
+  DEBUG_PRINTLN(F("BOOT: setup start"));
 
   greenhouseNode.setupStatusLed();
+  DEBUG_PRINTLN(F("BOOT: status LED ready"));
+
+  Wire.begin();
+  DEBUG_PRINTLN(F("BOOT: I2C bus ready"));
 
   setupSD(); //setup SD card logger
+  DEBUG_PRINTLN(F("BOOT: SD ready"));
   delay(20);
 
-  rtc.begin(); //initialize the DS3231 real-time clock object
+  if (!rtc.begin()) {
+    DEBUG_PRINTLN(F("BOOT: RTC not detected"));
+  } else {
+    DEBUG_PRINTLN(F("BOOT: RTC ready"));
+  }
 
+  DEBUG_PRINTLN(F("BOOT: init LCD"));
   setupLCD();
+  DEBUG_PRINTLN(F("BOOT: LCD ready"));
 
   initializePins(); //set up pins as input or output and power on the temp/humidity sensors
+  DEBUG_PRINTLN(F("BOOT: pins ready"));
 
   greenhouseNode.configure(sensors, events, settings); //no sample callback; sensors are read manually on a timer
+  DEBUG_PRINTLN(F("BOOT: node configured"));
 
   setupRadio();
+  DEBUG_PRINTLN(F("BOOT: setup complete"));
 }
 
 //==============================================================END SET UP=======================================================================
@@ -609,16 +628,20 @@ void tone_melody_brahms() {
 //==============================================================BEGIN RADIO SETUP=================================================================
 
 void setupRadio() {
+  DEBUG_PRINTLN(F("BOOT: radio setup start"));
+
   switch (data_pipe) {
     case radio: {
       // First try to connect at the desired 9600 baud rate (more stable for SoftwareSerial)
       radioSerial.begin(9600);
       rylr.setSerial(&radioSerial);
+      DEBUG_PRINTLN(F("BOOT: radio check @9600"));
 
       if (rylr.checkStatus() != 0) {
         DEBUG_PRINTLN(F("LoRa not at 9600. Trying 115200..."));
         // Module might be at factory default 115200 baud
         radioSerial.begin(115200);
+        DEBUG_PRINTLN(F("BOOT: radio check @115200"));
         if (rylr.checkStatus() == 0) {
           DEBUG_PRINTLN(F("LoRa found at 115200. Setting to 9600..."));
           // Send the AT command to permanently drop the baud rate to 9600
