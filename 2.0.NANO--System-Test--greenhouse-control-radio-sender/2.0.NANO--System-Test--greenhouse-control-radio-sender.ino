@@ -85,9 +85,27 @@ void setup() {
             radioSerial.begin(9600);
             rylr.setSerial(&radioSerial);
 
-            int result = rylr.checkStatus();
-            Serial.print("LoRa status: ");
-            Serial.println(result);
+            if (rylr.checkStatus() != 0) {
+                Serial.println("LoRa not at 9600. Trying 115200...");
+                radioSerial.begin(115200);
+                if (rylr.checkStatus() == 0) {
+                    Serial.println("LoRa found at 115200. Setting to 9600...");
+                    radioSerial.print("AT+IPR=9600\r\n");
+                    delay(500);
+                    
+                    radioSerial.begin(9600);
+                    if (rylr.checkStatus() == 0) {
+                        Serial.println("Successfully switched to 9600.");
+                    } else {
+                        Serial.println("Warning: 9600 verification failed.");
+                    }
+                } else {
+                    Serial.println("Radio not responding. Falling back to 9600.");
+                    radioSerial.begin(9600);
+                }
+            } else {
+                Serial.println("LoRa already at 9600.");
+            }
 
             rylr.setAddress(LOCAL_ADDRESS);
             rylr.setRFPower(14);

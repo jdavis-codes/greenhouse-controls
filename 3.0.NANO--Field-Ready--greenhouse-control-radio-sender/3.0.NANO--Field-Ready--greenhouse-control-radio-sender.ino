@@ -114,19 +114,6 @@ constexpr telegram_data_pipe data_pipe = radio;
 void onFanSet(bool state);
 void onSidesSet(bool state);
 void onWaterSet(bool state);
-void readSensors();
-void displayLCD();
-void printToMonitor();
-void writeToSD();
-void printDHTError(int chk);
-void rebootDHT22(int powerPin);
-void logicAndControl();
-void tone_melody_beethoven();
-void tone_melody_brahms();
-void setupSD();
-void setupLCD();
-void initializePins();
-void receiveReplies();
 
 GreenhouseControlNode::SensorBinding sensors[] = {
     {"GH_TEMP",  &greenhouseTemp},
@@ -152,7 +139,7 @@ GreenhouseControlNode::SettingBinding settings[] = {
 };
 
 
-//#define ENABLE_DEBUG_SERIAL // Uncomment to enable verbose Serial Monitor output
+#define ENABLE_DEBUG_SERIAL // comment this our if you're running out of memory and don't need debug prints -- saves about 200 bytes of flash and 10 bytes of RAM
 
 #ifdef ENABLE_DEBUG_SERIAL
   #define DEBUG_PRINT(...)   Serial.print(__VA_ARGS__)
@@ -167,7 +154,7 @@ GreenhouseControlNode::SettingBinding settings[] = {
 void setup() {
 
   // wait for Serial Monitor to connect. Needed for native USB port boards only:
-  Serial.begin(115200);
+  Serial.begin(9600);
   while (!Serial);
 
   greenhouseNode.setupStatusLed();
@@ -183,29 +170,7 @@ void setup() {
 
   greenhouseNode.configure(sensors, events, settings); //no sample callback; sensors are read manually on a timer
 
-  switch (data_pipe) {
-    case radio: {
-      radioSerial.begin(9600);
-      rylr.setSerial(&radioSerial);
-
-      int result = rylr.checkStatus();
-      (void)result;
-      DEBUG_PRINT(F("LoRa:"));
-      DEBUG_PRINTLN(result);
-
-      rylr.setAddress(LOCAL_ADDRESS);
-      rylr.setRFPower(14);
-      greenhouseNode.begin(&rylr, REMOTE_ADDRESS, data_pipe);
-      DEBUG_PRINTLN(F("Sender ready (radio)"));
-      break;
-    }
-    case uart_rx_tx: {
-      radioSerial.begin(9600);
-      greenhouseNode.begin(nullptr, REMOTE_ADDRESS, data_pipe, &radioSerial);
-      DEBUG_PRINTLN(F("Sender ready (uart)"));
-      break;
-    }
-  }
+  setupRadio();
 }
 
 //==============================================================END SET UP=======================================================================
@@ -641,5 +606,55 @@ void tone_melody_brahms() {
 
 //==========================================================END MELODY SUBROUTINES=================================================================
 
+//==============================================================BEGIN RADIO SETUP=================================================================
+
+void setupRadio() {
+  switch (data_pipe) {
+    case radio: {
+      // First try to connect at the desired 9600 baud rate (more stable for SoftwareSerial)
+      radioSerial.begin(9600);
+      rylr.setSerial(&radioSerial);
+
+      if (rylr.checkStatus() != 0) {
+        DEBUG_PRINTLN(F("LoRa not at 9600. Trying 115200..."));
+        // Module might be at factory default 115200 baud
+        radioSerial.begin(115200);
+        if (rylr.checkStatus() == 0) {
+          DEBUG_PRINTLN(F("LoRa found at 115200. Setting to 9600..."));
+          // Send the AT command to permanently drop the baud rate to 9600
+          radioSerial.print(F("AT+IPR=9600\r\n"));
+          delay(500); // Give the module time to save the new rate to flash
+          
+          // Re-initialize our end to match the new speed
+          radioSerial.begin(9600);
+          if (rylr.checkStatus() == 0) {
+             DEBUG_PRINTLN(F("Successfully switched to 9600."));
+          } else {
+             DEBUG_PRINTLN(F("Warning: 9600 verification failed."));
+          }
+        } else {
+          DEBUG_PRINTLN(F("Radio not responding. Falling back to 9600."));
+          radioSerial.begin(9600);
+        }
+      } else {
+        DEBUG_PRINTLN(F("LoRa already at 9600."));
+      }
+
+      rylr.setAddress(LOCAL_ADDRESS);
+      rylr.setRFPower(14);
+      greenhouseNode.begin(&rylr, REMOTE_ADDRESS, data_pipe);
+      DEBUG_PRINTLN(F("Sender ready (radio)"));
+      break;
+    }
+    case uart_rx_tx: {
+      radioSerial.begin(9600);
+      greenhouseNode.begin(nullptr, REMOTE_ADDRESS, data_pipe, &radioSerial);
+      DEBUG_PRINTLN(F("Sender ready (uart)"));
+      break;
+    }
+  }
+}
+
+//===============================================================END RADIO SETUP==================================================================
 
 //=====================================================================END OF PROGRAM==================================================================
