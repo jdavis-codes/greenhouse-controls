@@ -12,6 +12,13 @@
 #define LOCAL_ADDRESS 2
 #define REMOTE_ADDRESS 1
 
+enum data_pipe {
+    radio,
+    uart_rx_tx
+};
+
+constexpr data_pipe selected_data_pipe = radio;
+
 RYLR_LoRaAT rylr;
 unsigned long activityBlinkUntil = 0;
 const unsigned long ACTIVITY_BLINK_MS = 120;
@@ -27,9 +34,7 @@ int soilTargetMoisture = 50;
 int soilMoistureDelta = 10;
 
 // Forward declare callbacks
-void onFanTelegramTrigger(bool state);
-void onSidesTelegramTrigger(bool state);
-void onIrrigationTelegramTrigger(bool state);
+void onControlCommandRequested(const char* key, bool state);
 void onSensorAlertChanged(int sensorIdx, AlertThresholdType thresholdType, bool enabled, float threshold);
 void onEventAlertChanged(int eventIdx, bool enabled);
 void sendLoRaPayload(const char* payload);
@@ -39,6 +44,7 @@ const char* wifiEncryptionLabel(wifi_auth_mode_t encryption);
 bool connectWiFiOrExplain();
 void printWiFiTroubleshooting(wl_status_t status);
 void scanAndListNearbyNetworks();
+static bool readLineFromPipe(Stream& pipe, char* buffer, size_t bufferLen);
 
 // Map settings mirroring the greenhouse controller script
 SensorMetadata activeSensors[] = {
@@ -50,9 +56,9 @@ SensorMetadata activeSensors[] = {
 };
 
 EventMetadata activeEvents[] = {
-    {"Exhaust Fan", "🟩", "  ", "ON", "OFF", "#32cd32", &LogEntry::fanOn, onFanTelegramTrigger},
-    {"Roller Sides", "🟧", "  ", "UP", "DOWN", "#ffa500", &LogEntry::motorUp, onSidesTelegramTrigger},
-    {"Irrigation", "💧", "  ", "ON", "OFF", "#1e90ff", &LogEntry::waterOn, onIrrigationTelegramTrigger}
+    {"Exhaust Fan", "FAN", "🟩", "  ", "ON", "OFF", "#32cd32", &LogEntry::fanOn},
+    {"Roller Sides", "SIDES", "🟧", "  ", "UP", "DOWN", "#ffa500", &LogEntry::motorUp},
+    {"Irrigation", "WATER", "💧", "  ", "ON", "OFF", "#1e90ff", &LogEntry::waterOn}
 };
 
 SettingsParameter botSettings[] = {
@@ -63,6 +69,29 @@ SettingsParameter botSettings[] = {
     {"📉", "Moisture Delta", "MDELTA", (float *)&soilMoistureDelta, 1.0, 50.0, "%"}
 };
 
+static bool readLineFromPipe(Stream& pipe, char* buffer, size_t bufferLen) {
+    static size_t index = 0;
+
+    while (pipe.available()) {
+        int ch = pipe.read();
+        if (ch < 0) break;
+
+        if (ch == '\r') continue;
+        if (ch == '\n') {
+            if (index == 0) continue;
+            buffer[index] = '\0';
+            index = 0;
+            return true;
+        }
+
+        if (index + 1 < bufferLen) {
+            buffer[index++] = (char)ch;
+        }
+    }
+
+    return false;
+}
+
 void setup() {
     Serial.begin(115200);
     delay(2000);
@@ -72,15 +101,25 @@ void setup() {
     pinMode(LEDB, OUTPUT);
     showRoleLedGREEN();
 
-    // Start LoRa UART
-    Serial1.begin(115200, SERIAL_8N1, LORA_RX, LORA_TX);
-    rylr.setSerial(&Serial1);
+    switch (selected_data_pipe) {
+        case radio: {
+            Serial1.begin(115200, SERIAL_8N1, LORA_RX, LORA_TX);
+            rylr.setSerial(&Serial1);
 
-    int result = rylr.checkStatus();
-    Serial.printf("LoRa status: %d\n", result);
+            int result = rylr.checkStatus();
+            Serial.printf("LoRa status: %d\n", result);
 
-    rylr.setAddress(LOCAL_ADDRESS);
-    rylr.setRFPower(14);
+            rylr.setAddress(LOCAL_ADDRESS);
+            rylr.setRFPower(14);
+            Serial.println("Receiver using RADIO data pipe.");
+            break;
+        }
+        case uart_rx_tx: {
+            Serial1.begin(115200, SERIAL_8N1, LORA_RX, LORA_TX);
+            Serial.println("Receiver using UART RX/TX data pipe.");
+            break;
+        }
+    }
 
     // Start WiFi
     if (!connectWiFiOrExplain()) {
@@ -99,6 +138,7 @@ void setup() {
     telBot.onSettingChanged(onSettingChanged);
     telBot.onSensorAlertChanged(onSensorAlertChanged);
     telBot.onEventAlertChanged(onEventAlertChanged);
+    telBot.onControlCommand(onControlCommandRequested);
     logBuffer = telBot.getLogBuffer();
     telBot.sendBootAnnouncements();
     requestNodeSync();
@@ -215,24 +255,56 @@ void processAlertNotificationPacket(const RYLR_LoRaAT_Message *message) {
 }
 
 void receiveAndProcessLoRa() {
-    RYLR_LoRaAT_Message *message = rylr.checkMessage();
-    if (!message) return;
+    switch (selected_data_pipe) {
+        case radio: {
+            RYLR_LoRaAT_Message *message = rylr.checkMessage();
+            if (!message) return;
 
-    blinkActivityLed();
-    telBot.updateLinkMetrics(message->rssi, message->snr);
-    Serial.printf("RX from %d (RSSI %d, SNR %d) [%d bytes]: %s\n",
-                  message->from_address, message->rssi, message->snr, message->data_len, message->data);
+            blinkActivityLed();
+            telBot.updateLinkMetrics(message->rssi, message->snr);
+            Serial.printf("RX from %d (RSSI %d, SNR %d) [%d bytes]: %s\n",
+                          message->from_address, message->rssi, message->snr, message->data_len, message->data);
 
-    if (strncmp(message->data, "D,", 2) == 0) {
-        processIncomingDataPacket(message);
-        return;
-    }
-    if (strncmp(message->data, "R,", 2) == 0) {
-        processSyncPacket(message);
-        return;
-    }
-    if (strncmp(message->data, "N,", 2) == 0) {
-        processAlertNotificationPacket(message);
+            if (strncmp(message->data, "D,", 2) == 0) {
+                processIncomingDataPacket(message);
+                return;
+            }
+            if (strncmp(message->data, "R,", 2) == 0) {
+                processSyncPacket(message);
+                return;
+            }
+            if (strncmp(message->data, "N,", 2) == 0) {
+                processAlertNotificationPacket(message);
+            }
+            break;
+        }
+        case uart_rx_tx: {
+            char line[160];
+            if (!readLineFromPipe(Serial1, line, sizeof(line))) return;
+
+            blinkActivityLed();
+            Serial.printf("RX UART: %s\n", line);
+
+            RYLR_LoRaAT_Message pseudo = {};
+            pseudo.from_address = 0;
+            pseudo.rssi = 0;
+            pseudo.snr = 0;
+            pseudo.data = line;
+            pseudo.data_len = strlen(line);
+
+            if (strncmp(pseudo.data, "D,", 2) == 0) {
+                processIncomingDataPacket(&pseudo);
+                return;
+            }
+            if (strncmp(pseudo.data, "R,", 2) == 0) {
+                processSyncPacket(&pseudo);
+                return;
+            }
+            if (strncmp(pseudo.data, "N,", 2) == 0) {
+                processAlertNotificationPacket(&pseudo);
+            }
+            break;
+        }
     }
 }
 
@@ -243,21 +315,11 @@ void onSettingChanged(const char* key, float value) {
 }
 
 // Callbacks that push commands back OUT over LoRa to the sender node
-void onFanTelegramTrigger(bool state) {
-    char payload[32];
-    snprintf(payload, sizeof(payload), "C,FAN,%d", state ? 1 : 0);
-    sendLoRaPayload(payload);
-}
+void onControlCommandRequested(const char* key, bool state) {
+    if (!key || !key[0]) return;
 
-void onSidesTelegramTrigger(bool state) {
     char payload[32];
-    snprintf(payload, sizeof(payload), "C,SIDES,%d", state ? 1 : 0);
-    sendLoRaPayload(payload);
-}
-
-void onIrrigationTelegramTrigger(bool state) {
-    char payload[32];
-    snprintf(payload, sizeof(payload), "C,WATER,%d", state ? 1 : 0);
+    snprintf(payload, sizeof(payload), "C,%s,%d", key, state ? 1 : 0);
     sendLoRaPayload(payload);
 }
 
@@ -278,10 +340,18 @@ void onEventAlertChanged(int eventIdx, bool enabled) {
 }
 
 void sendLoRaPayload(const char* payload) {
-    rylr.startTxMessage();
-    rylr.addTxData(payload);
-    rylr.sendTxMessage(REMOTE_ADDRESS);
-    Serial.printf("LoRa TX: %s\n", payload);
+    switch (selected_data_pipe) {
+        case radio:
+            rylr.startTxMessage();
+            rylr.addTxData(payload);
+            rylr.sendTxMessage(REMOTE_ADDRESS);
+            Serial.printf("LoRa TX: %s\n", payload);
+            break;
+        case uart_rx_tx:
+            Serial1.println(payload);
+            Serial.printf("UART TX: %s\n", payload);
+            break;
+    }
 }
 
 void requestNodeSync() {

@@ -21,13 +21,13 @@ struct SensorMetadata {
 
 struct EventMetadata {
     const char* name;
+    const char* key;
     const char* emojiOn;
     const char* emojiOff;
     const char* onStr;
     const char* offStr;
     const char* color;
     bool LogEntry::*stateField;
-    void (*controlCallback)(bool);
 };
 
 struct SettingsParameter {
@@ -124,11 +124,13 @@ public:
     void onSettingChanged(void (*cb)(const char* key, float value)) { settingChangedCb = cb; }
     void onSensorAlertChanged(void (*cb)(int sensorIdx, AlertThresholdType thresholdType, bool enabled, float threshold)) { sensorAlertChangedCb = cb; }
     void onEventAlertChanged(void (*cb)(int eventIdx, bool enabled)) { eventAlertChangedCb = cb; }
+    void onControlCommand(void (*cb)(const char* key, bool state)) { controlCommandCb = cb; }
 
 private:
     void (*settingChangedCb)(const char* key, float value) = nullptr;
     void (*sensorAlertChangedCb)(int sensorIdx, AlertThresholdType thresholdType, bool enabled, float threshold) = nullptr;
     void (*eventAlertChangedCb)(int eventIdx, bool enabled) = nullptr;
+    void (*controlCommandCb)(const char* key, bool state) = nullptr;
     FastBot2 bot;
     BotOperatingMode operatingMode;
     

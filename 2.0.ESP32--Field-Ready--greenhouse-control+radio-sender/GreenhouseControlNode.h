@@ -5,11 +5,55 @@
 
 class RYLR_LoRaAT;
 
+enum telegram_data_pipe {
+    radio,
+    uart_rx_tx
+};
+
 class GreenhouseControlNode {
 public:
+    struct SensorBinding {
+        const char* key;
+        int* valueRef;
+    };
+
+    struct EventBinding {
+        const char* key;
+        bool* stateRef;
+        void (*onSetState)(bool);
+    };
+
+    struct SettingBinding {
+        const char* key;
+        float* valueRef;
+    };
+
+    typedef void (*SampleCallback)(unsigned long now);
+
     GreenhouseControlNode();
 
-    void begin(RYLR_LoRaAT* radioLink, uint16_t remoteNodeAddress);
+    void configure(SensorBinding* sensorList,
+                   uint8_t sensorListCount,
+                   EventBinding* eventList,
+                   uint8_t eventListCount,
+                   SettingBinding* settingList,
+                   uint8_t settingListCount,
+                   SampleCallback sampleFn = nullptr);
+
+    template <size_t numS, size_t numE, size_t numP>
+    void configure(SensorBinding (&sensorList)[numS],
+                   EventBinding (&eventList)[numE],
+                   SettingBinding (&settingList)[numP],
+                   SampleCallback sampleFn = nullptr) {
+        configure(sensorList, numS, eventList, numE, settingList, numP, sampleFn);
+    }
+
+    void begin(RYLR_LoRaAT* radioLink,
+               uint16_t remoteNodeAddress,
+               telegram_data_pipe dataPipe,
+               Stream* serialPipe = nullptr);
+
+    bool readLineFromSerial(char* buffer, size_t bufferLen);
     void setupStatusLed();
     void noteActivity(unsigned long now);
     void tick(unsigned long now);
@@ -18,22 +62,9 @@ public:
 private:
     static const unsigned long ACTIVITY_BLINK_MS = 120;
     static const unsigned long SEND_INTERVAL_MS = 15000;
-
-    enum SensorIndex {
-        SENSOR_GREENHOUSE_TEMP = 0,
-        SENSOR_AMBIENT_TEMP,
-        SENSOR_GREENHOUSE_HUMIDITY,
-        SENSOR_INSOLATION,
-        SENSOR_SOIL_MOISTURE,
-        SENSOR_COUNT
-    };
-
-    enum EventIndex {
-        EVENT_FAN = 0,
-        EVENT_SIDES,
-        EVENT_IRRIGATION,
-        EVENT_COUNT
-    };
+    static const uint8_t MAX_SENSOR_BINDINGS = 8;
+    static const uint8_t MAX_EVENT_BINDINGS = 8;
+    static const uint8_t MAX_SETTING_BINDINGS = 8;
 
     struct SensorAlertConfig {
         bool lowEnabled;
@@ -58,40 +89,36 @@ private:
 
     struct PersistedState {
         uint32_t magic;
-        float targetTemp1;
-        float targetTemp2;
-        float tempDelta;
-        float targetMoisture;
-        float moistureDelta;
-        uint8_t sensorLowEnabled[SENSOR_COUNT];
-        float sensorLowThreshold[SENSOR_COUNT];
-        uint8_t sensorHighEnabled[SENSOR_COUNT];
-        float sensorHighThreshold[SENSOR_COUNT];
-        uint8_t eventEnabled[EVENT_COUNT];
+        uint8_t sensorCount;
+        uint8_t eventCount;
+        uint8_t settingCount;
+        float settingValues[MAX_SETTING_BINDINGS];
+        uint8_t sensorLowEnabled[MAX_SENSOR_BINDINGS];
+        float sensorLowThreshold[MAX_SENSOR_BINDINGS];
+        uint8_t sensorHighEnabled[MAX_SENSOR_BINDINGS];
+        float sensorHighThreshold[MAX_SENSOR_BINDINGS];
+        uint8_t eventEnabled[MAX_EVENT_BINDINGS];
     };
 
     RYLR_LoRaAT* radio;
+    telegram_data_pipe activeDataPipe;
+    Stream* serialDataPipe;
+    size_t serialReadIndex;
     uint16_t remoteAddress;
     bool storageReady;
     unsigned long activityBlinkUntil;
     unsigned long lastSendMillis;
 
-    int greenhouseTemp;
-    int greenhouseHumidity;
-    int soilMoisture;
-    int insolation;
-    bool fanOn;
-    bool sidesUp;
-    bool irrigationOn;
+    SensorBinding* sensors;
+    uint8_t sensorCount;
+    EventBinding* events;
+    uint8_t eventCount;
+    SettingBinding* settings;
+    uint8_t settingCount;
+    SampleCallback sampleCallback;
 
-    float targetTemp1;
-    float targetTemp2;
-    float tempDelta;
-    float targetMoisture;
-    float moistureDelta;
-
-    SensorAlertConfig sensorAlerts[SENSOR_COUNT];
-    EventAlertConfig eventAlerts[EVENT_COUNT];
+    SensorAlertConfig sensorAlerts[MAX_SENSOR_BINDINGS];
+    EventAlertConfig eventAlerts[MAX_EVENT_BINDINGS];
 
     void loadPersistedState();
     void persistState();
@@ -104,7 +131,6 @@ private:
     void showIdleStatusLed();
     void updateStatusLed(unsigned long now);
 
-    void updateDemoSensors(unsigned long now);
     void sendPacket(const char* payload);
     void sendTelemetry();
     void sendSettingSync(const char* key, float value);
@@ -119,6 +145,9 @@ private:
 
     float sensorValue(uint8_t sensorIndex) const;
     bool eventState(uint8_t eventIndex) const;
+
+    int findEventIndexByKey(const char* key) const;
+    int findSettingIndexByKey(const char* key) const;
 
     bool handleControlCommand(const char* deviceKey, int value);
     bool handleSettingCommand(const char* key, float value);

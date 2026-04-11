@@ -1,18 +1,16 @@
 #include <Arduino.h>
-#include <SoftwareSerial.h>
 #include "GreenhouseControlNode.h"
-#include "RYLR_LoRaAT_Software_Serial.h"
+#include "RYLR_LoRaAT.h"
 
-#define LORA_RX 2
-#define LORA_TX 3
+#define LORA_RX RX
+#define LORA_TX TX
 
 // Address of this sender and the forwarder we're sending to
 #define LOCAL_ADDRESS 1
 #define REMOTE_ADDRESS 2
 
-RYLR_LoRaAT_Software_Serial rylr;
+RYLR_LoRaAT rylr;
 GreenhouseControlNode greenhouseNode;
-SoftwareSerial radioSerial(LORA_RX, LORA_TX);
 
 constexpr telegram_data_pipe data_pipe = radio;
 
@@ -82,8 +80,8 @@ void setup() {
 
     switch (data_pipe) {
         case radio: {
-            radioSerial.begin(9600);
-            rylr.setSerial(&radioSerial);
+            Serial1.begin(115200, SERIAL_8N1, LORA_RX, LORA_TX);
+            rylr.setSerial(&Serial1);
 
             int result = rylr.checkStatus();
             Serial.print("LoRa status: ");
@@ -92,13 +90,13 @@ void setup() {
             rylr.setAddress(LOCAL_ADDRESS);
             rylr.setRFPower(14);
             greenhouseNode.begin(&rylr, REMOTE_ADDRESS, data_pipe);
-            Serial.println("Greenhouse sender ready - transmitting via the rylr RADIO data pipe.");
+            Serial.println("Greenhouse sender ready on RADIO pipe.");
             break;
         }
         case uart_rx_tx: {
-            radioSerial.begin(9600);
-            greenhouseNode.begin(nullptr, REMOTE_ADDRESS, data_pipe, &radioSerial);
-            Serial.println("Greenhouse sender ready - transmitting via the UART RX/TX data pipe.");
+            Serial1.begin(115200, SERIAL_8N1, LORA_RX, LORA_TX);
+            greenhouseNode.begin(nullptr, REMOTE_ADDRESS, data_pipe, &Serial1);
+            Serial.println("Greenhouse sender ready on UART RX/TX pipe.");
             break;
         }
     }
@@ -112,7 +110,7 @@ void loop() {
 void receiveReplies() {
     switch (data_pipe) {
         case radio: {
-            RYLR_LoRaAT_Software_Serial_Message* message = rylr.checkMessage();
+            RYLR_LoRaAT_Message* message = rylr.checkMessage();
             if (!message) return;
 
             greenhouseNode.noteActivity(millis());

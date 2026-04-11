@@ -425,8 +425,9 @@ int GreenhouseTelegramBot::findSettingIndex(const String& token) const {
 int GreenhouseTelegramBot::findEventIndex(const String& token) const {
     String normalized = normalizeToken(token);
     for (int i = 0; i < numEvents; i++) {
+        String key = normalizeToken(eventMetadata[i].key ? eventMetadata[i].key : "");
         String name = normalizeToken(eventMetadata[i].name);
-        if (normalized == name || name.indexOf(normalized) >= 0) {
+        if ((key.length() && normalized == key) || normalized == name || name.indexOf(normalized) >= 0) {
             return i;
         }
     }
@@ -646,6 +647,10 @@ void GreenhouseTelegramBot::handleMessage(fb::Update& u) {
             sendDashboardMainMenu(chatID);
         } else if (text == "Live Dashboard") {
             sendDashboardMainMenu(chatID);
+        } else if (command == "/control") {
+            sendControlsMenu(chatID);
+        } else if (command == "/config") {
+            sendConfigMainMenu(chatID);
         } else if (command == "/alert") {
             sendAlertsMenu(chatID);
         } else if (command == "/help" || command == "/guide") {
@@ -729,23 +734,31 @@ void GreenhouseTelegramBot::handleMessage(fb::Update& u) {
             return;
         }
 
-        int splitIdx = args.indexOf(' ');
-        if (splitIdx == -1) {
+        String controlArgs = args;
+        controlArgs.trim();
+
+        int splitIdx = controlArgs.lastIndexOf(' ');
+        if (splitIdx <= 0 || splitIdx >= (int)controlArgs.length() - 1) {
             fb::Message msg(buildControlsText(), chatID);
             msg.mode = fb::Message::Mode::HTML;
             bot.sendMessage(msg, false);
             return;
         }
 
-        String deviceToken = args.substring(0, splitIdx);
-        String stateToken = args.substring(splitIdx + 1);
+        String deviceToken = controlArgs.substring(0, splitIdx);
+        String stateToken = controlArgs.substring(splitIdx + 1);
         deviceToken.trim();
         stateToken.trim();
         stateToken = normalizeToken(stateToken);
 
         int eventIdx = findEventIndex(deviceToken);
-        if (eventIdx < 0 || !eventMetadata[eventIdx].controlCallback) {
+        if (eventIdx < 0 || !eventMetadata[eventIdx].key) {
             bot.sendMessage(fb::Message("Unknown control. Use /control to open the control menu.", chatID), false);
+            return;
+        }
+
+        if (!controlCommandCb) {
+            bot.sendMessage(fb::Message("Controls are unavailable right now. Please try again in a moment.", chatID), false);
             return;
         }
 
@@ -766,7 +779,7 @@ void GreenhouseTelegramBot::handleMessage(fb::Update& u) {
             return;
         }
 
-        eventMetadata[eventIdx].controlCallback(state);
+        controlCommandCb(eventMetadata[eventIdx].key, state);
         bot.sendMessage(fb::Message(String("Command sent: ") + eventMetadata[eventIdx].name + " -> " + (state ? eventMetadata[eventIdx].onStr : eventMetadata[eventIdx].offStr), chatID), false);
         return;
     }
@@ -1015,8 +1028,8 @@ void GreenhouseTelegramBot::handleQuery(fb::Update& u) {
     if (qData.startsWith("evon_")) {
         bot.answerCallbackQuery(u.query().id(), "Command executing");
         int idx = qData.substring(5).toInt();
-        if (idx >= 0 && idx < numEvents && eventMetadata[idx].controlCallback) {
-            eventMetadata[idx].controlCallback(true);
+        if (idx >= 0 && idx < numEvents && eventMetadata[idx].key && controlCommandCb) {
+            controlCommandCb(eventMetadata[idx].key, true);
             if (chatMode == MODE_CHAT) {
                 fb::Message msg(String("Command sent: ") + eventMetadata[idx].name + " -> " + eventMetadata[idx].onStr, chatID);
                 bot.sendMessage(msg, false);
@@ -1027,8 +1040,8 @@ void GreenhouseTelegramBot::handleQuery(fb::Update& u) {
     if (qData.startsWith("evoff_")) {
         bot.answerCallbackQuery(u.query().id(), "Command executing");
         int idx = qData.substring(6).toInt();
-        if (idx >= 0 && idx < numEvents && eventMetadata[idx].controlCallback) {
-            eventMetadata[idx].controlCallback(false);
+        if (idx >= 0 && idx < numEvents && eventMetadata[idx].key && controlCommandCb) {
+            controlCommandCb(eventMetadata[idx].key, false);
             if (chatMode == MODE_CHAT) {
                 fb::Message msg(String("Command sent: ") + eventMetadata[idx].name + " -> " + eventMetadata[idx].offStr, chatID);
                 bot.sendMessage(msg, false);
@@ -1051,25 +1064,48 @@ void GreenhouseTelegramBot::sendDashboardMainMenu(fb::ID chatID, uint32_t editMs
 void GreenhouseTelegramBot::sendControlsMenu(fb::ID chatID, uint32_t editMsgID) {
     BotOperatingMode chatMode = getModeForChat(chatIDKey(chatID));
     String txt = "<b>Manual Equipment Override</b>\n"
-                 "Tap a control below, or use <code>/control &lt;device&gt; &lt;state&gt;</code>.";
+                 "Tap a control below to toggle on/off";
+    if (chatMode == MODE_CHAT) {
+        txt += "\nShortcut: /control &lt;device&gt; &lt;state&gt;";
+        txt += "\nExample: <code>/control exhaust fan on</code>";
+    }
     if (ChatSessionState* session = findSessionByChatID(chatIDKey(chatID))) {
         session->dashboardLiveView = false;
     }
     
     String lbls = "";
     String cbs = "";
-    
+
     for (int i = 0; i < numEvents; i++) {
-        if (eventMetadata[i].controlCallback != nullptr) {
-            lbls += "[" + String(eventMetadata[i].name) + " " + String(eventMetadata[i].onStr) + "];" + 
-                    "[" + String(eventMetadata[i].name) + " " + String(eventMetadata[i].offStr) + "]\n";
-            cbs += "evon_" + String(i) + ";evoff_" + String(i) + ";";
+        if (!eventMetadata[i].key || !eventMetadata[i].key[0]) continue;
+
+        if (lbls.length() > 0) {
+            lbls += "\n";
+            cbs += ";";
         }
+
+        lbls += String(eventMetadata[i].name) + " " + String(eventMetadata[i].onStr) + ";" +
+                String(eventMetadata[i].name) + " " + String(eventMetadata[i].offStr);
+        cbs += "evon_" + String(i) + ";evoff_" + String(i);
+    }
+
+    if (lbls.length() == 0) {
+        txt += "\n\nNo control targets are configured.";
+        if (editMsgID == 0) {
+            fb::Message msg(txt, chatID);
+            msg.mode = fb::Message::Mode::HTML;
+            bot.sendMessage(msg, false);
+        } else {
+            fb::TextEdit msg(txt, editMsgID, chatID);
+            msg.mode = fb::Message::Mode::HTML;
+            bot.editText(msg, false);
+        }
+        return;
     }
 
     if (chatMode == MODE_DASHBOARD) {
-        lbls += "🔙 Back";
-        cbs += "dash_back";
+        lbls += "\n🔙 Back";
+        cbs += ";dash_back";
     }
     
     fb::InlineMenu menu(lbls, cbs);
@@ -1103,7 +1139,7 @@ void GreenhouseTelegramBot::sendSvgMenu(fb::ID chatID, uint32_t editMsgID) {
 void GreenhouseTelegramBot::sendConfigMainMenu(fb::ID chatID, uint32_t editMsgID) {
     BotOperatingMode chatMode = getModeForChat(chatIDKey(chatID));
     String txt = (chatMode == MODE_CHAT)
-        ? String("<b>⚙️ Set Point Selection</b>\nTap a parameter, then reply with the new value when prompted.")
+        ? String("<b>⚙️ Set Point Selection</b>\nTap a parameter, then reply with the new value when prompted.\nShortcut: /config &lt;parameter&gt; &lt;value&gt;\nExample: <code>/config temp1 82.5</code>")
         : String("<b>⚙️ Interactive Configuration</b>\nSelect a parameter to adjust:");
     if (ChatSessionState* session = findSessionByChatID(chatIDKey(chatID))) {
         session->dashboardLiveView = false;
@@ -1584,32 +1620,62 @@ void GreenhouseTelegramBot::sendSvgGraph(fb::ID chatID) {
     // Configure canvas size based on number of points
     int pointSpacing = 60;
     int marginX = 80; // Left margin for Y axis labels and event names
-    int width = (count * pointSpacing) + marginX + 20; // Extra room for axes and title
-    int height = 250 + (numEvents * eventRowHeight);
-    int marginYTop = 50; // Top margin for Title and Legend
+    int rawWidth = (count * pointSpacing) + marginX + 20;
+    int width = (rawWidth < 500) ? 500 : rawWidth; // Minimum width so legend and labels never overlap
+    int minLegendColWidth = 180;
+    int legendCols = (width - marginX - 20) / minLegendColWidth;
+    if (legendCols > numSensors) legendCols = numSensors;
+    if (legendCols < 1) legendCols = 1;
+    int legendRows = (numSensors + legendCols - 1) / legendCols;
+    int legendRowHeight = 18;
+    int marginYTop = 44 + (legendRows * legendRowHeight); // Extra top room for wrapped legend rows
+    int graphHeight = 200; // Fixed plot area height so data always fills the frame
+    int height = marginYTop + graphHeight + marginYBottom;
     int graphWidth = width - marginX - 20;
-    int graphHeight = height - marginYTop - marginYBottom;
+
+    auto normalizedPlotColor = [](const char* rawColor) {
+        String color = rawColor ? String(rawColor) : String("#7ec8ff");
+        String lowered = color;
+        lowered.toLowerCase();
+        if (lowered == "#ffff00" || lowered == "#ff0" || lowered == "yellow") {
+            return String("#ffd95a");
+        }
+        return color;
+    };
     
     // Start SVG document with responsive viewBox
-    String svg = "<svg viewBox=\"0 0 " + String(width) + " " + String(height) + "\" xmlns=\"http://www.w3.org/2000/svg\" style=\"background-color:#ffffff; font-family:sans-serif;\">\n";
+    String svg = "<svg viewBox=\"0 0 " + String(width) + " " + String(height) + "\" xmlns=\"http://www.w3.org/2000/svg\" style=\"background-color:#2f343a; font-family:sans-serif;\">\n";
     svg += "  <style>\n";
-    svg += "    .axis { font-size: 10px; fill: #666; }\n";
-    svg += "    .title { font-size: 14px; font-weight: bold; fill: #333; }\n";
-    svg += "    .legend { font-size: 10px; font-weight: bold; }\n";
-    svg += "    .val { font-size: 10px; font-weight: bold; }\n";
+    svg += "    .axis { font-size: 10px; fill: #d2d8dd; }\n";
+    svg += "    .title { font-size: 14px; font-weight: bold; fill: #f2f5f7; }\n";
+    svg += "    .legend { font-size: 10px; font-weight: bold; fill: #eef2f5; }\n";
+    svg += "    .val { font-size: 8px; font-weight: bold; }\n";
     svg += "  </style>\n";
     
     // Background and Title
     String title = (numSensors == 1) ? String(sensorMetadata[0].name) : "Combined Sensor";
-    svg += "  <text x=\"" + String(width / 2) + "\" y=\"20\" class=\"title\" text-anchor=\"middle\">" + title + " History</text>\n";
+    svg += "  <text x=\"" + String(width / 2) + "\" y=\"24\" class=\"title\" text-anchor=\"middle\">" + title + " History</text>\n";
+
+    // Horizontal divider lines to improve readability on dense charts.
+    int horizontalDividers = 4;
+    for (int g = 1; g <= horizontalDividers; g++) {
+        int yGrid = marginYTop + ((graphHeight * g) / (horizontalDividers + 1));
+        float gridVal = max_val - ((max_val - min_val) * g) / (horizontalDividers + 1);
+        svg += "  <line x1=\"" + String(marginX) + "\" y1=\"" + String(yGrid) + "\" x2=\"" + String(width - 20) + "\" y2=\"" + String(yGrid) + "\" stroke=\"#505861\" stroke-width=\"1\" stroke-dasharray=\"5 5\" />\n";
+        svg += "  <text x=\"" + String(marginX - 6) + "\" y=\"" + String(yGrid + 3) + "\" style=\"font-size:8px;fill:#8a929a;\" text-anchor=\"end\">" + String(gridVal, 1) + "</text>\n";
+    }
 
     // Draw Axes
-    svg += "  <line x1=\"" + String(marginX) + "\" y1=\"" + String(marginYTop) + "\" x2=\"" + String(marginX) + "\" y2=\"" + String(height - marginYBottom) + "\" stroke=\"#ccc\" stroke-width=\"1.5\" />\n"; // Y Axis
-    svg += "  <line x1=\"" + String(marginX) + "\" y1=\"" + String(height - marginYBottom) + "\" x2=\"" + String(width - 20) + "\" y2=\"" + String(height - marginYBottom) + "\" stroke=\"#ccc\" stroke-width=\"1.5\" />\n"; // X Axis
+    svg += "  <line x1=\"" + String(marginX) + "\" y1=\"" + String(marginYTop) + "\" x2=\"" + String(marginX) + "\" y2=\"" + String(height - marginYBottom) + "\" stroke=\"#aeb7bf\" stroke-width=\"1.5\" />\n"; // Y Axis
+    svg += "  <line x1=\"" + String(marginX) + "\" y1=\"" + String(height - marginYBottom) + "\" x2=\"" + String(width - 20) + "\" y2=\"" + String(height - marginYBottom) + "\" stroke=\"#aeb7bf\" stroke-width=\"1.5\" />\n"; // X Axis
 
-    // Y Axis Labels
-    svg += "  <text x=\"" + String(marginX - 5) + "\" y=\"" + String(marginYTop + 4) + "\" class=\"axis\" text-anchor=\"end\">" + String(max_val, 1) + "</text>\n";
-    svg += "  <text x=\"" + String(marginX - 5) + "\" y=\"" + String(height - marginYBottom + 4) + "\" class=\"axis\" text-anchor=\"end\">" + String(min_val, 1) + "</text>\n";
+    // Y axis tick labels at top/mid/bottom improve reading across multiple lines.
+    for (int t = 0; t <= 2; t++) {
+        float ratio = t / 2.0f;
+        float tickVal = max_val - ((max_val - min_val) * ratio);
+        int yTick = marginYTop + int(graphHeight * ratio);
+        svg += "  <text x=\"" + String(marginX - 6) + "\" y=\"" + String(yTick + 4) + "\" class=\"axis\" text-anchor=\"end\">" + String(tickVal, 1) + "</text>\n";
+    }
     
     // X-Axis Time Labels (Drawn once for the primary timescale)
     for (size_t i = 0; i < count; i++) {
@@ -1622,7 +1688,7 @@ void GreenhouseTelegramBot::sendSvgGraph(fb::ID chatID) {
     // Draw Blocks for Events (ON State)
     if (numEvents > 0) {
         for (int e = 0; e < numEvents; e++) {
-            String color = eventMetadata[e].color ? String(eventMetadata[e].color) : "#000000";
+            String color = normalizedPlotColor(eventMetadata[e].color);
             int yEvent = height - marginYBottom + marginYBottomBase + (e * eventRowHeight) - 8;
             
             // Draw Event Title on Y Axis
@@ -1640,11 +1706,16 @@ void GreenhouseTelegramBot::sendSvgGraph(fb::ID chatID) {
 
     // Start drawing data lines for each history
     for (int h = 0; h < numSensors; h++) {
-        String color = sensorMetadata[h].color ? String(sensorMetadata[h].color) : "#000000";
+        String color = normalizedPlotColor(sensorMetadata[h].color);
         
-        // Draw Legend for this line
-        int legendX = marginX + 10 + (h * 80);
-        svg += "  <text x=\"" + String(legendX) + "\" y=\"40\" class=\"legend\" fill=\"" + color + "\">" + String(sensorMetadata[h].name) + "</text>\n";
+        // Draw wrapped legend entries to avoid overlapping labels.
+        int legendCol = h % legendCols;
+        int legendRow = h / legendCols;
+        int legendWidth = graphWidth / legendCols;
+        int legendX = marginX + (legendCol * legendWidth) + 8;
+        int legendY = 44 + (legendRow * legendRowHeight);
+        svg += "  <line x1=\"" + String(legendX) + "\" y1=\"" + String(legendY - 4) + "\" x2=\"" + String(legendX + 12) + "\" y2=\"" + String(legendY - 4) + "\" stroke=\"" + color + "\" stroke-width=\"3\" />\n";
+        svg += "  <text x=\"" + String(legendX + 16) + "\" y=\"" + String(legendY) + "\" class=\"legend\" fill=\"" + color + "\">" + String(sensorMetadata[h].name) + " (" + String(sensorMetadata[h].unit) + ")</text>\n";
 
         // Line
         svg += "  <polyline fill=\"none\" stroke=\"" + color + "\" stroke-width=\"2\" points=\"";
@@ -1666,7 +1737,8 @@ void GreenhouseTelegramBot::sendSvgGraph(fb::ID chatID) {
             // For large datasets, limit drawing labels to prevent clutter
             if (i % 12 == 0 || i == count - 1) { 
                 svg += "  <circle cx=\"" + String(x) + "\" cy=\"" + String(y) + "\" r=\"3.5\" fill=\"" + color + "\" />\n";
-                int yOffset = (h % 2 == 0) ? -8 : 14; 
+                // Stack value labels above the dot, fanning upward per sensor
+                int yOffset = -4 - (h * 9);
                 svg += "  <text x=\"" + String(x) + "\" y=\"" + String(y + yOffset) + "\" class=\"val\" fill=\"" + color + "\" text-anchor=\"middle\">" + String(val, 1) + "</text>\n";
             }
         }

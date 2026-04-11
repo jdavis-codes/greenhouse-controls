@@ -13,7 +13,7 @@
 #include "RYLR_LoRaAT.h"
 
 namespace {
-constexpr uint32_t PERSIST_MAGIC = 0x47484332UL;
+constexpr uint32_t PERSIST_MAGIC = 0x47484431UL;
 
 void debugLogf(const char* format, ...) {
     char buffer[160];
@@ -27,32 +27,75 @@ void debugLogf(const char* format, ...) {
 
 GreenhouseControlNode::GreenhouseControlNode()
     : radio(nullptr),
+      activeDataPipe(::radio),
+      serialDataPipe(nullptr),
+      serialReadIndex(0),
       remoteAddress(0),
-            storageReady(false),
-            activityBlinkUntil(0),
+      storageReady(false),
+      activityBlinkUntil(0),
       lastSendMillis(0),
-      greenhouseTemp(82),
-      greenhouseHumidity(58),
-      soilMoisture(45),
-      insolation(73),
-      fanOn(false),
-      sidesUp(false),
-      irrigationOn(false),
-      targetTemp1(80.0f),
-      targetTemp2(85.0f),
-      tempDelta(4.0f),
-      targetMoisture(50.0f),
-      moistureDelta(10.0f) {}
+      sensors(nullptr),
+      sensorCount(0),
+      events(nullptr),
+      eventCount(0),
+      settings(nullptr),
+      settingCount(0),
+      sampleCallback(nullptr) {}
 
-void GreenhouseControlNode::begin(RYLR_LoRaAT* radioLink, uint16_t remoteNodeAddress) {
+void GreenhouseControlNode::configure(SensorBinding* sensorList,
+                                      uint8_t sensorListCount,
+                                      EventBinding* eventList,
+                                      uint8_t eventListCount,
+                                      SettingBinding* settingList,
+                                      uint8_t settingListCount,
+                                      SampleCallback sampleFn) {
+    sensors = sensorList;
+    sensorCount = min(sensorListCount, MAX_SENSOR_BINDINGS);
+    events = eventList;
+    eventCount = min(eventListCount, MAX_EVENT_BINDINGS);
+    settings = settingList;
+    settingCount = min(settingListCount, MAX_SETTING_BINDINGS);
+    sampleCallback = sampleFn;
+}
+
+void GreenhouseControlNode::begin(RYLR_LoRaAT* radioLink,
+                                  uint16_t remoteNodeAddress,
+                                  telegram_data_pipe dataPipe,
+                                  Stream* serialPipe) {
     radio = radioLink;
     remoteAddress = remoteNodeAddress;
+    activeDataPipe = dataPipe;
+    serialDataPipe = serialPipe;
+    serialReadIndex = 0;
 
     loadPersistedState();
     initializeEventAlertState();
     evaluateSensorAlerts();
     sendFullStateSync();
     sendTelemetry();
+}
+
+bool GreenhouseControlNode::readLineFromSerial(char* buffer, size_t bufferLen) {
+    if (!serialDataPipe || !buffer || bufferLen < 2) return false;
+
+    while (serialDataPipe->available()) {
+        int ch = serialDataPipe->read();
+        if (ch < 0) break;
+
+        if (ch == '\r') continue;
+        if (ch == '\n') {
+            if (serialReadIndex == 0) continue;
+            buffer[serialReadIndex] = '\0';
+            serialReadIndex = 0;
+            return true;
+        }
+
+        if (serialReadIndex + 1 < bufferLen) {
+            buffer[serialReadIndex++] = (char)ch;
+        }
+    }
+
+    return false;
 }
 
 void GreenhouseControlNode::setupStatusLed() {
@@ -73,7 +116,10 @@ void GreenhouseControlNode::noteActivity(unsigned long now) {
 }
 
 void GreenhouseControlNode::tick(unsigned long now) {
-    updateDemoSensors(now);
+    if (sampleCallback) {
+        sampleCallback(now);
+    }
+
     evaluateSensorAlerts();
     updateStatusLed(now);
 
@@ -155,20 +201,22 @@ void GreenhouseControlNode::persistState() {
 
     PersistedState state = {};
     state.magic = PERSIST_MAGIC;
-    state.targetTemp1 = targetTemp1;
-    state.targetTemp2 = targetTemp2;
-    state.tempDelta = tempDelta;
-    state.targetMoisture = targetMoisture;
-    state.moistureDelta = moistureDelta;
+    state.sensorCount = sensorCount;
+    state.eventCount = eventCount;
+    state.settingCount = settingCount;
 
-    for (int i = 0; i < SENSOR_COUNT; i++) {
+    for (uint8_t i = 0; i < settingCount; i++) {
+        state.settingValues[i] = settings[i].valueRef ? *(settings[i].valueRef) : 0.0f;
+    }
+
+    for (uint8_t i = 0; i < sensorCount; i++) {
         state.sensorLowEnabled[i] = sensorAlerts[i].lowEnabled ? 1 : 0;
         state.sensorLowThreshold[i] = sensorAlerts[i].lowThreshold;
         state.sensorHighEnabled[i] = sensorAlerts[i].highEnabled ? 1 : 0;
         state.sensorHighThreshold[i] = sensorAlerts[i].highThreshold;
     }
 
-    for (int i = 0; i < EVENT_COUNT; i++) {
+    for (uint8_t i = 0; i < eventCount; i++) {
         state.eventEnabled[i] = eventAlerts[i].enabled ? 1 : 0;
     }
 
@@ -183,13 +231,15 @@ void GreenhouseControlNode::persistState() {
 }
 
 void GreenhouseControlNode::applyPersistedState(const PersistedState& state) {
-    targetTemp1 = state.targetTemp1;
-    targetTemp2 = state.targetTemp2;
-    tempDelta = state.tempDelta;
-    targetMoisture = state.targetMoisture;
-    moistureDelta = state.moistureDelta;
+    uint8_t applySettingCount = min(settingCount, state.settingCount);
+    for (uint8_t i = 0; i < applySettingCount; i++) {
+        if (settings[i].valueRef) {
+            *(settings[i].valueRef) = state.settingValues[i];
+        }
+    }
 
-    for (int i = 0; i < SENSOR_COUNT; i++) {
+    uint8_t applySensorCount = min(sensorCount, state.sensorCount);
+    for (uint8_t i = 0; i < applySensorCount; i++) {
         sensorAlerts[i].lowEnabled = state.sensorLowEnabled[i] != 0;
         sensorAlerts[i].lowThreshold = state.sensorLowThreshold[i];
         sensorAlerts[i].lowActive = false;
@@ -198,13 +248,14 @@ void GreenhouseControlNode::applyPersistedState(const PersistedState& state) {
         sensorAlerts[i].highActive = false;
     }
 
-    for (int i = 0; i < EVENT_COUNT; i++) {
+    uint8_t applyEventCount = min(eventCount, state.eventCount);
+    for (uint8_t i = 0; i < applyEventCount; i++) {
         eventAlerts[i].enabled = state.eventEnabled[i] != 0;
     }
 }
 
 void GreenhouseControlNode::initializeEventAlertState() {
-    for (int i = 0; i < EVENT_COUNT; i++) {
+    for (uint8_t i = 0; i < eventCount; i++) {
         eventAlerts[i].lastStateKnown = true;
         eventAlerts[i].lastState = eventState(i);
     }
@@ -217,12 +268,12 @@ void GreenhouseControlNode::saveSettingValue(const char* key, float value) {
 }
 
 void GreenhouseControlNode::saveSensorAlert(uint8_t sensorIndex) {
-    if (sensorIndex >= SENSOR_COUNT) return;
+    if (sensorIndex >= sensorCount) return;
     persistState();
 }
 
 void GreenhouseControlNode::saveEventAlert(uint8_t eventIndex) {
-    if (eventIndex >= EVENT_COUNT) return;
+    if (eventIndex >= eventCount) return;
     persistState();
 }
 
@@ -250,15 +301,17 @@ void GreenhouseControlNode::updateStatusLed(unsigned long now) {
     }
 }
 
-void GreenhouseControlNode::updateDemoSensors(unsigned long now) {
-    greenhouseTemp = 78 + (now / 10000) % 15;
-    greenhouseHumidity = 50 + (now / 8000) % 20;
-    soilMoisture = 30 + (now / 12000) % 40;
-    insolation = 20 + (now / 6000) % 60;
-}
-
 void GreenhouseControlNode::sendPacket(const char* payload) {
-    if (!radio || !payload || !payload[0]) return;
+    if (!payload || !payload[0]) return;
+
+    if (activeDataPipe == uart_rx_tx && serialDataPipe) {
+        debugLogf("TX(UART): %s\n", payload);
+        noteActivity(millis());
+        serialDataPipe->println(payload);
+        return;
+    }
+
+    if (!radio) return;
 
     debugLogf("TX -> [%d]: %s\n", remoteAddress, payload);
     noteActivity(millis());
@@ -269,10 +322,19 @@ void GreenhouseControlNode::sendPacket(const char* payload) {
 }
 
 void GreenhouseControlNode::sendTelemetry() {
-    char payload[64];
+    if (!sensors || !events || sensorCount < 4 || eventCount < 3) {
+        return;
+    }
+
+    char payload[80];
     snprintf(payload, sizeof(payload), "D,%d,%d,%d,%d,%d,%d,%d",
-             greenhouseTemp, greenhouseHumidity, soilMoisture, insolation,
-             fanOn ? 1 : 0, sidesUp ? 1 : 0, irrigationOn ? 1 : 0);
+             (int)sensorValue(0),
+             (int)sensorValue(1),
+             (int)sensorValue(2),
+             (int)sensorValue(3),
+             eventState(0) ? 1 : 0,
+             eventState(1) ? 1 : 0,
+             eventState(2) ? 1 : 0);
     sendPacket(payload);
 }
 
@@ -283,7 +345,7 @@ void GreenhouseControlNode::sendSettingSync(const char* key, float value) {
 }
 
 void GreenhouseControlNode::sendSensorAlertSync(uint8_t sensorIndex) {
-    if (sensorIndex >= SENSOR_COUNT) return;
+    if (sensorIndex >= sensorCount) return;
 
     char payload[64];
     const SensorAlertConfig& alert = sensorAlerts[sensorIndex];
@@ -295,7 +357,7 @@ void GreenhouseControlNode::sendSensorAlertSync(uint8_t sensorIndex) {
 }
 
 void GreenhouseControlNode::sendEventAlertSync(uint8_t eventIndex) {
-    if (eventIndex >= EVENT_COUNT) return;
+    if (eventIndex >= eventCount) return;
 
     char payload[32];
     snprintf(payload, sizeof(payload), "R,E,%u,%d", eventIndex, eventAlerts[eventIndex].enabled ? 1 : 0);
@@ -303,22 +365,21 @@ void GreenhouseControlNode::sendEventAlertSync(uint8_t eventIndex) {
 }
 
 void GreenhouseControlNode::sendFullStateSync() {
-    sendSettingSync("TEMP1", targetTemp1);
-    sendSettingSync("TEMP2", targetTemp2);
-    sendSettingSync("TDELTA", tempDelta);
-    sendSettingSync("MOIST", targetMoisture);
-    sendSettingSync("MDELTA", moistureDelta);
+    for (uint8_t i = 0; i < settingCount; i++) {
+        if (!settings[i].key || !settings[i].valueRef) continue;
+        sendSettingSync(settings[i].key, *(settings[i].valueRef));
+    }
 
-    for (int i = 0; i < SENSOR_COUNT; i++) {
+    for (uint8_t i = 0; i < sensorCount; i++) {
         sendSensorAlertSync(i);
     }
-    for (int i = 0; i < EVENT_COUNT; i++) {
+    for (uint8_t i = 0; i < eventCount; i++) {
         sendEventAlertSync(i);
     }
 }
 
 void GreenhouseControlNode::evaluateSensorAlerts() {
-    for (int i = 0; i < SENSOR_COUNT; i++) {
+    for (uint8_t i = 0; i < sensorCount; i++) {
         float value = sensorValue(i);
         SensorAlertConfig& alert = sensorAlerts[i];
 
@@ -343,21 +404,12 @@ void GreenhouseControlNode::sendSensorAlertNotification(uint8_t sensorIndex, cha
 }
 
 void GreenhouseControlNode::setEventState(uint8_t eventIndex, bool newState, bool shouldNotify) {
-    if (eventIndex >= EVENT_COUNT) return;
+    if (eventIndex >= eventCount || !events || !events[eventIndex].stateRef) return;
 
-    bool previousState = eventState(eventIndex);
-    switch (eventIndex) {
-        case EVENT_FAN:
-            fanOn = newState;
-            break;
-        case EVENT_SIDES:
-            sidesUp = newState;
-            break;
-        case EVENT_IRRIGATION:
-            irrigationOn = newState;
-            break;
-        default:
-            return;
+    bool previousState = *(events[eventIndex].stateRef);
+    *(events[eventIndex].stateRef) = newState;
+    if (events[eventIndex].onSetState) {
+        events[eventIndex].onSetState(newState);
     }
 
     EventAlertConfig& alert = eventAlerts[eventIndex];
@@ -380,73 +432,56 @@ void GreenhouseControlNode::sendEventAlertNotification(uint8_t eventIndex, bool 
 }
 
 float GreenhouseControlNode::sensorValue(uint8_t sensorIndex) const {
-    switch (sensorIndex) {
-        case SENSOR_GREENHOUSE_TEMP:
-            return greenhouseTemp;
-        case SENSOR_AMBIENT_TEMP:
-            return greenhouseTemp - 5.0f;
-        case SENSOR_GREENHOUSE_HUMIDITY:
-            return greenhouseHumidity;
-        case SENSOR_INSOLATION:
-            return insolation;
-        case SENSOR_SOIL_MOISTURE:
-            return soilMoisture;
-        default:
-            return 0.0f;
-    }
+    if (!sensors || sensorIndex >= sensorCount || !sensors[sensorIndex].valueRef) return 0.0f;
+    return (float)(*(sensors[sensorIndex].valueRef));
 }
 
 bool GreenhouseControlNode::eventState(uint8_t eventIndex) const {
-    switch (eventIndex) {
-        case EVENT_FAN:
-            return fanOn;
-        case EVENT_SIDES:
-            return sidesUp;
-        case EVENT_IRRIGATION:
-            return irrigationOn;
-        default:
-            return false;
+    if (!events || eventIndex >= eventCount || !events[eventIndex].stateRef) return false;
+    return *(events[eventIndex].stateRef);
+}
+
+int GreenhouseControlNode::findEventIndexByKey(const char* key) const {
+    if (!key || !events) return -1;
+    for (uint8_t i = 0; i < eventCount; i++) {
+        if (events[i].key && strcmp(events[i].key, key) == 0) {
+            return i;
+        }
     }
+    return -1;
+}
+
+int GreenhouseControlNode::findSettingIndexByKey(const char* key) const {
+    if (!key || !settings) return -1;
+    for (uint8_t i = 0; i < settingCount; i++) {
+        if (settings[i].key && strcmp(settings[i].key, key) == 0) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 bool GreenhouseControlNode::handleControlCommand(const char* deviceKey, int value) {
-    bool state = value == 1;
-
-    if (strcmp(deviceKey, "FAN") == 0) {
-        setEventState(EVENT_FAN, state, true);
-        debugLogf("Fan set %s via LoRa\n", fanOn ? "ON" : "OFF");
-        return true;
-    }
-    if (strcmp(deviceKey, "SIDES") == 0) {
-        setEventState(EVENT_SIDES, state, true);
-        debugLogf("Sides set %s via LoRa\n", sidesUp ? "UP" : "DOWN");
-        return true;
-    }
-    if (strcmp(deviceKey, "WATER") == 0) {
-        setEventState(EVENT_IRRIGATION, state, true);
-        debugLogf("Irrigation set %s via LoRa\n", irrigationOn ? "ON" : "OFF");
-        return true;
-    }
-
-    debugLogf("Unknown control command: %s\n", deviceKey);
-    return false;
-}
-
-bool GreenhouseControlNode::handleSettingCommand(const char* key, float value) {
-    float* target = nullptr;
-
-    if (strcmp(key, "TEMP1") == 0) target = &targetTemp1;
-    else if (strcmp(key, "TEMP2") == 0) target = &targetTemp2;
-    else if (strcmp(key, "TDELTA") == 0) target = &tempDelta;
-    else if (strcmp(key, "MOIST") == 0) target = &targetMoisture;
-    else if (strcmp(key, "MDELTA") == 0) target = &moistureDelta;
-
-    if (!target) {
-        debugLogf("Unknown setpoint key: %s\n", key);
+    int eventIndex = findEventIndexByKey(deviceKey);
+    if (eventIndex < 0) {
+        debugLogf("Unknown control command: %s\n", deviceKey ? deviceKey : "<null>");
         return false;
     }
 
-    *target = value;
+    bool state = value == 1;
+    setEventState((uint8_t)eventIndex, state, true);
+    debugLogf("CONTROL %s = %s\n", deviceKey, state ? "ON" : "OFF");
+    return true;
+}
+
+bool GreenhouseControlNode::handleSettingCommand(const char* key, float value) {
+    int settingIndex = findSettingIndexByKey(key);
+    if (settingIndex < 0 || !settings[settingIndex].valueRef) {
+        debugLogf("Unknown setpoint key: %s\n", key ? key : "<null>");
+        return false;
+    }
+
+    *(settings[settingIndex].valueRef) = value;
     saveSettingValue(key, value);
     sendSettingSync(key, value);
 
@@ -455,7 +490,7 @@ bool GreenhouseControlNode::handleSettingCommand(const char* key, float value) {
 }
 
 void GreenhouseControlNode::handleSensorAlertCommand(int sensorIndex, char direction, int enabled, float threshold) {
-    if (sensorIndex < 0 || sensorIndex >= SENSOR_COUNT) return;
+    if (sensorIndex < 0 || sensorIndex >= sensorCount) return;
 
     SensorAlertConfig& alert = sensorAlerts[sensorIndex];
     bool enableFlag = enabled == 1;
@@ -476,7 +511,7 @@ void GreenhouseControlNode::handleSensorAlertCommand(int sensorIndex, char direc
 }
 
 void GreenhouseControlNode::handleEventAlertCommand(int eventIndex, int enabled) {
-    if (eventIndex < 0 || eventIndex >= EVENT_COUNT) return;
+    if (eventIndex < 0 || eventIndex >= eventCount) return;
 
     eventAlerts[eventIndex].enabled = enabled == 1;
     eventAlerts[eventIndex].lastStateKnown = true;
