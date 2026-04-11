@@ -19,6 +19,10 @@
 #define LORA_RX RX
 #define LORA_TX TX
 
+// Address of this sender and the forwarder we're sending to
+#define LOCAL_ADDRESS  1
+#define REMOTE_ADDRESS 2
+
 // this tg object talks to our telegram chat specified by ID here.
 TelegramSerial tg(WIFI_SSID, WIFI_PASSWORD, BOT_TOKEN, PERSONAL_CHAT_ID, &Serial);
 
@@ -28,6 +32,54 @@ RYLR_LoRaAT rylr;
 //global for activity LED blinking
 unsigned long activityBlinkUntil = 0;
 const unsigned long ACTIVITY_BLINK_MS = 120;
+
+void setup()
+{
+    Serial.begin(115200);
+    delay(2000);
+
+    pinMode(LEDR, OUTPUT);
+    pinMode(LEDG, OUTPUT);
+    pinMode(LEDB, OUTPUT);
+    showRoleLed();
+
+    // Start LoRa UART and attach to the library
+    Serial1.begin(9600, SERIAL_8N1, LORA_RX, LORA_TX);
+    rylr.setSerial(&Serial1);
+
+    int result = rylr.checkStatus();
+    Serial.printf("LoRa status @9600: %d\n", result);
+
+    if (result != 0) {
+        Serial1.end();
+        Serial1.begin(115200, SERIAL_8N1, LORA_RX, LORA_TX);
+        result = rylr.checkStatus();
+        Serial.printf("LoRa status @115200: %d\n", result);
+    }
+
+    // Set LoRa address (must match the sender's target address)
+    rylr.setAddress(REMOTE_ADDRESS);
+    rylr.setRFPower(14);
+
+    // Connect WiFi via TelegramSerial
+    if (!tg.begin())
+    {
+        Serial.println("WiFi failed — messages will queue until connected");
+    }
+    else
+    {
+        Serial.println("WiFi connected!");
+    }
+
+    tg.println("📡 Telegram Forwarder online! Listening for LoRa messages...");
+}
+
+void loop()
+{
+    tg.update();
+    receiveAndForwardMessages();
+    updateStatusLed();
+}
 
 void writeRgbLed(bool redOn, bool greenOn, bool blueOn)
 {
@@ -69,9 +121,7 @@ void forwardStructuredMessage(const RYLR_LoRaAT_Message *message)
 
     if (parsed == 6)
     {
-        tg.printf("🌡️ %dF  💧 %d%%  🌱 %d%%  ☀️ %d%%\n"
-                  "🔄 Motor: %s  🌀 Fan: %s\n"
-                  "📶 RSSI: %d  SNR: %d\n",
+        tg.printf("🌡️ %dF  💧 %d%%  🌱 %d%%  ☀️ %d%% | 🔄 Motor: %s  🌀 Fan: %s | 📶 RSSI: %d  SNR: %d\n",
                   temp, humidity, moisture, insolation,
                   motor_up ? "UP" : "DOWN", fan_on ? "ON" : "OFF",
                   message->rssi, message->snr);
@@ -96,43 +146,3 @@ void receiveAndForwardMessages()
     forwardStructuredMessage(message);
 }
 
-void setup()
-{
-    Serial.begin(115200);
-    delay(2000);
-
-    pinMode(LEDR, OUTPUT);
-    pinMode(LEDG, OUTPUT);
-    pinMode(LEDB, OUTPUT);
-    showRoleLed();
-
-    // Start LoRa UART and attach to the library
-    Serial1.begin(115200, SERIAL_8N1, LORA_RX, LORA_TX);
-    rylr.setSerial(&Serial1);
-
-    int result = rylr.checkStatus();
-    Serial.printf("LoRa status: %d\n", result);
-
-    // Set LoRa address (must match the sender's target address)
-    rylr.setAddress(2);
-    rylr.setRFPower(14);
-
-    // Connect WiFi via TelegramSerial
-    if (!tg.begin())
-    {
-        Serial.println("WiFi failed — messages will queue until connected");
-    }
-    else
-    {
-        Serial.println("WiFi connected!");
-    }
-
-    tg.println("📡 Telegram Forwarder online! Listening for LoRa messages...");
-}
-
-void loop()
-{
-    tg.update();
-    receiveAndForwardMessages();
-    updateStatusLed();
-}

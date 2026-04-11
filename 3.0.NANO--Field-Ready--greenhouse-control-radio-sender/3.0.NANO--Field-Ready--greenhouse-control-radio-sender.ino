@@ -150,6 +150,12 @@ GreenhouseControlNode::SettingBinding settings[] = {
   #define DEBUG_PRINTLN(...)
 #endif
 
+int freeRam() {
+  extern int __heap_start, *__brkval;
+  int v;
+  return (int)&v - (__brkval == 0 ? (int)&__heap_start : (int)__brkval);
+}
+
 //==============================================================BEGIN SET UP======================================================================
 
 void setup() {
@@ -189,7 +195,11 @@ void setup() {
   DEBUG_PRINTLN(F("BOOT: node configured"));
 
   setupRadio();
+  DEBUG_PRINT(F("BOOT: freeRam="));
+  DEBUG_PRINTLN(freeRam());
+  Serial.flush();
   DEBUG_PRINTLN(F("BOOT: setup complete"));
+  Serial.flush();
 }
 
 //==============================================================END SET UP=======================================================================
@@ -197,28 +207,40 @@ void setup() {
 //===============================================================BEGIN MAIN LOOP==================================================================
 
 void loop() {
+  DEBUG_PRINT(F("LOOP ram="));
+  DEBUG_PRINTLN(freeRam());
+  Serial.flush();
+
   readInterval = (1000 * 3);         //the read interval in milliseconds for readSensors()
   readTime     = (millis() - startTime2);
   if (readTime > readInterval) {
+    DEBUG_PRINTLN(F("LOOP: readSensors")); Serial.flush();
     readSensors();                   //gets readings from all sensors
     startTime2 = millis();           //resets the timer
   }
 
+  DEBUG_PRINTLN(F("LOOP: displayLCD")); Serial.flush();
   displayLCD();                      //displays readings on the 20x4 LCD
+  DEBUG_PRINTLN(F("LOOP: logic")); Serial.flush();
   logicAndControl();                 //controls the relays based on sensor conditions
+  DEBUG_PRINTLN(F("LOOP: tick")); Serial.flush();
   greenhouseNode.tick(millis());     //handles telemetry transmission and incoming LoRa commands
+  DEBUG_PRINTLN(F("LOOP: replies")); Serial.flush();
   receiveReplies();                  //processes any incoming LoRa reply messages
 
+  DEBUG_PRINTLN(F("LOOP: print")); Serial.flush();
   printToMonitor();                  //prints data to the Serial Monitor if a computer is connected
 
   writeInterval = (1000 * 5);        //writes every 5 seconds
   //writeInterval = 900000;          //writes every 15 minutes
   runTime = (millis() - startTime1);
   if (runTime > writeInterval) {
+    DEBUG_PRINTLN(F("LOOP: writeSD")); Serial.flush();
     writeToSD();                     //writes data to the microSD card
     startTime1 = millis();
   }
 
+  DEBUG_PRINTLN(F("LOOP: end")); Serial.flush();
   delay(100);
 }
 

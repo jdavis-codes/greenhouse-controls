@@ -1,22 +1,39 @@
+/*The sketch below runs the MESH TEST NODE (Arduino Nano), based on resident3.
+It reads real greenhouse sensors and sends temperature data plus a fake battery
+voltage to a companion mesh node via a SoftwareSerial UART link.
 
-/*The sketch below runs the RESIDENT, a greenhouse attendant 
-INPUTS: 
-* temperature and humidity from DHT 22 --one for greehnouse and one for outside (ambient)
+UART protocol (companion_sensor_ble_uart_v2):
+  MC,N=<node_id>,T=<temperature_c>,B=<battery_v>\n
+  9600 baud, 8N1, on pins 5 (RX) / 6 (TX)
+
+INPUTS:
+* temperature and humidity from DHT 22 -- one for greenhouse and one for outside (ambient)
 * soil moisture from an analog probe
 * light from a photoresistor
-*time and date from a DS3231 RTD module
+* time and date from a DS3231 RTC module
 
 OUTPUTS:
 * micro SD card data log
 * two 120 VAC relays for fans, auto-louvers
-* two 24 VDC relays for reversing motors for roll up sides
-* one 24 vdc relay for irrigation solenoid
-* possible wifi connection for warning messages
+* two 24 VDC relays for reversing motors for roll-up sides
+* one 24 VDC relay for irrigation solenoid
 * LCD I2C display
+* SoftwareSerial mesh uplink (pins 5/6)
 */
 
 
 //========================================================================BEGIN DECLARATIONS=========================================================
+#include <Arduino.h>
+#include <SoftwareSerial.h>
+
+// Mesh UART link on pins 5 (RX from mesh node) / 6 (TX to mesh node)
+#define MESH_RX 5
+#define MESH_TX 6
+SoftwareSerial meshSerial(MESH_RX, MESH_TX);
+
+#define MESH_NODE_ID     7      // Node ID sent in the MC line
+#define FAKE_BATTERY_V   4.20f  // No real battery on a Nano -- fake it
+
 #include <RTClib.h> //includes the library for using the DS3231 Time module
 RTC_DS3231 rtc;     // sets up the time module
 
@@ -28,7 +45,7 @@ DHTStable DHTgreenhouse; //creates an instance of the DHTStable class for the in
 DHTStable DHTambient;//creates an instance of the DHTStable class for the outlet
 
 #define relayZeroPin  A0 //declare all pins; uses analog pins for digital output; zero and one are the 120vac relays
-#define relayOnePin  A1 
+#define relayOnePin  A1
 #define relayTwoPin  A2// two and three are the reversing motor relays for the roll up sides
 #define relayThreePin  A3
 //A4 pin is shared (by necessity) between the rtd clock SDA and the digital display I2C SDA
@@ -46,10 +63,11 @@ DHTStable DHTambient;//creates an instance of the DHTStable class for the outlet
 //digital pin 12 is (by necessity) the micro SD card module MISO
 // digital pin 13 is (by necessity) the micro SD card module SCK
 
-float grnhouseTemp; //these 4 variables will store the temperatures (in Celcius!) and humidities (%rH) from the sensors
+float grnhouseTemp; //these 4 variables will store the temperatures (in Fahrenheit!) and humidities (%rH) from the sensors
 float grnhouseHum;
 float ambientTemp;
 float ambientHum;
+float grnhouseTempC; // Celsius reading kept for mesh transmission
 
 //float grnhouseTargetTemp1 = 85.0 ; //Fahrenheit! these are the variables for two target temperatures in the greehnouse and a delta, or hysteresis
 float grnhouseTargetTemp1= 80.0; //for testing, comment out when done
@@ -68,7 +86,7 @@ bool waterOn = false; //this variable stores the condition of the irrigation sol
 
 int insolation; //this variable stores the light level on a 0-100 scale
 
-#include <SPI.h> //library for Serial Peripheral Interface communication 
+#include <SPI.h> //library for Serial Peripheral Interface communication
 #include <SD.h> //library for microSD card
 const int chipSelect = 10;// sets pin 10 for CS on the microSD module pinout
 File myFile; //creates a file for the micro SD card
@@ -82,6 +100,11 @@ unsigned long startTime1 = 0;
 unsigned long readInterval = 3000;
 unsigned long readTime ;
 unsigned long startTime2 = 0;
+
+//variables for the timer on the mesh send function
+unsigned long meshSendInterval = 10000; // send to mesh every 10 seconds
+unsigned long meshSendTime;
+unsigned long meshStartTime = 0;
 
 //====================================begin declarations for tone melody subroutines================================
 #include "pitches.h" //gets library of tones
@@ -101,6 +124,9 @@ void setup() {
   // wait for Serial Monitor to connect. Needed for native USB port boards only:
   Serial.begin(9600);
   while (!Serial);
+
+  meshSerial.begin(9600); // initialize the mesh UART link at 9600 baud (8N1)
+  Serial.println(F("Mesh serial initialized on pins 5/6"));
 
   setupSD(); //Setup SD card logger
 
@@ -129,9 +155,15 @@ void loop() {
 
 
  logicAndControl();//controls the relay based on the conditions
- 
+
  printToMonitor(); //prints data to Serial Monitor if a computer is connected with an active serial monitor
 
+ // Send sensor data to mesh node on a timer
+ meshSendTime = (millis() - meshStartTime);
+ if (meshSendTime > meshSendInterval) {
+   sendToMesh();
+   meshStartTime = millis();
+ }
 
  writeInterval = (1000 *5);  //writes every 5 seconds
  //writeInterval = 900000;  //writes every 15 minutes
@@ -171,18 +203,18 @@ void setupLCD(){
 }
 
 void initializePins(){
-  pinMode (relayZeroPin, OUTPUT); 
-  pinMode (relayOnePin, OUTPUT); 
+  pinMode (relayZeroPin, OUTPUT);
+  pinMode (relayOnePin, OUTPUT);
   pinMode (relayTwoPin, OUTPUT);
-  pinMode (relayThreePin, OUTPUT); 
-  pinMode (relayFourPin, OUTPUT); 
-  pinMode (insolationPin, INPUT); 
-  pinMode (soilMoisturePin, INPUT);    
-  pinMode (grnhousePin, INPUT); 
+  pinMode (relayThreePin, OUTPUT);
+  pinMode (relayFourPin, OUTPUT);
+  pinMode (insolationPin, INPUT);
+  pinMode (soilMoisturePin, INPUT);
+  pinMode (grnhousePin, INPUT);
   pinMode (grnhousePowerPin, OUTPUT);
   pinMode (speakerPin, OUTPUT);
-  pinMode (ambientPin, INPUT); 
-  pinMode (ambientPowerPin, OUTPUT); 
+  pinMode (ambientPin, INPUT);
+  pinMode (ambientPowerPin, OUTPUT);
 
   digitalWrite (grnhousePowerPin, HIGH);
   digitalWrite (ambientPowerPin, HIGH);
@@ -213,12 +245,12 @@ if (chkAmbient != 0){
    delay (10);
   }
 
-
-grnhouseTemp = ((DHTgreenhouse.getTemperature() * 9.0) / 5.0 + 32.0);//Fahrenheit
+grnhouseTempC = DHTgreenhouse.getTemperature(); // keep Celsius for mesh
+grnhouseTemp = (grnhouseTempC * 9.0 / 5.0 + 32.0);//Fahrenheit
 
 grnhouseHum = DHTgreenhouse.getHumidity();
 ambientTemp = ((DHTambient.getTemperature() * 9.0) / 5.0 + 32.0);//Fahrenheit!
-ambientHum = DHTambient.getHumidity(); 
+ambientHum = DHTambient.getHumidity();
 
 //now read the soil moisture and convert to 0-100
 soilMoisture = map(analogRead(soilMoisturePin), 0, 1023, 100, 0);
@@ -230,7 +262,31 @@ insolation = map(analogRead(insolationPin), 0, 1023, 0, 100);
   //=================================================END TEMPERATURE AND HUMIDITY SUBROUTINE===========================================================
 
 
-void displayLCD(){ 
+//===============================================SUBROUTINE TO SEND DATA TO MESH NODE=============================================
+
+void sendToMesh() {
+  // Format: MC,N=<node_id>,T=<temperature_c>,B=<battery_v>\n
+  meshSerial.print(F("MC,N="));
+  meshSerial.print(MESH_NODE_ID);
+  meshSerial.print(F(",T="));
+  meshSerial.print(grnhouseTempC, 1); // one decimal place, Celsius
+  meshSerial.print(F(",B="));
+  meshSerial.print(FAKE_BATTERY_V, 2); // two decimal places
+  meshSerial.println(); // sends \n
+
+  // Echo to Serial Monitor for debugging
+  Serial.print(F("MESH TX: MC,N="));
+  Serial.print(MESH_NODE_ID);
+  Serial.print(F(",T="));
+  Serial.print(grnhouseTempC, 1);
+  Serial.print(F(",B="));
+  Serial.println(FAKE_BATTERY_V, 2);
+}
+
+//=================================================END MESH SEND SUBROUTINE===========================================================
+
+
+void displayLCD(){
 //==================================================SUBROUTINE TO DISPLAY INFO ON THE LCD SCREEN======================================================
 // Now display the greehnouse and ampbient temperature and humidity on the lcd
  lcd.setCursor(0,0);
@@ -246,7 +302,7 @@ void displayLCD(){
  lcd.print(F("F--"));
  lcd.print(ambientHum);
  lcd.print(F("%rH"));
- 
+
 
  lcd.setCursor(0,2);
  lcd.print(F("SUNLITE:"));
@@ -278,11 +334,11 @@ void printToMonitor(void){
   Serial.println(grnhouseTemp);
   Serial.print(F("Greenhouse Humidity:  "));
   Serial.println(grnhouseHum);
-  
+
   Serial.print(F("ambient Temperature F:  "));
   Serial.println(ambientTemp);
   Serial.print(F("ambient Humidity:  "));
-  Serial.println(ambientHum); 
+  Serial.println(ambientHum);
 
 
   Serial.print(F("Soil Moisture:  "));
@@ -311,7 +367,7 @@ void printToMonitor(void){
       Serial.println(F("water is OFF"));
     }
 
-  
+
   delay(50);
 //=======================================================END SERIAL MONITOR SUBROUTINE===============================================
 }
@@ -336,7 +392,7 @@ void writeToSD(void){
     myFile.print(grnhouseTemp);
     myFile.print(F(","));
     myFile.print(grnhouseHum);
-   
+
     myFile.print(F(","));
     myFile.print(ambientTemp);
     myFile.print(F(","));
@@ -352,7 +408,7 @@ void writeToSD(void){
     // if the file didn't open, print an error:
     Serial.println(F("error opening grnhs.txt"));
   }
- delay(100); 
+ delay(100);
 //=======================================================END MICRO SD CARD SUBROUTINE=======================================================
 }
 //=======================================================BEGIN SUBROUTINE TO CHECK DHT22 SENSOR ERROR=================================================
@@ -376,7 +432,7 @@ void printDHTError(int chk){
         Serial.print("DHT22 Unknown error,\t");
         break;
     }
-    
+
 }
 //=======================================================END SUBROUTINE TO CHECK DHT22 SENSOR ERROR======================
 //=======================================================BEGIN SUBROUTINE TO RE-BOOT DHT22 IN CASE OF ERROR============================
@@ -451,7 +507,7 @@ void tone_melody_beethoven (){
 // so -4 means a dotted quarter note, that is, a quarter plus an eighteenth!!
 int melody[] = {
 
-  
+
   NOTE_E4,4,  NOTE_E4,4,  NOTE_F4,4,  NOTE_G4,4,//1
   NOTE_G4,4,  NOTE_F4,4,  NOTE_E4,4,  NOTE_D4,4,
   NOTE_C4,4,  NOTE_C4,4,  NOTE_D4,4,  NOTE_E4,4,
@@ -462,7 +518,7 @@ int melody[] = {
   NOTE_C4,4,  NOTE_C4,4,  NOTE_D4,4,  NOTE_E4,4,
   NOTE_D4,-4,  NOTE_C4,8,  NOTE_C4,2,
  };
- tempo=114; 
+ tempo=114;
 
 // sizeof giv/es the number of bytes, each int valsmaue is composed of two bytes (16 bits)
 // there are two values per note (pitch and duration), so for each note there are four bytes
@@ -565,4 +621,3 @@ int divider = 0, noteDuration = 0;
 
 
 //=====================================================================END OF PROGRAM==================================================================
-
