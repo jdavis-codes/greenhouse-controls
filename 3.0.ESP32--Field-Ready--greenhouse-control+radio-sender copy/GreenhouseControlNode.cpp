@@ -322,19 +322,20 @@ void GreenhouseControlNode::sendPacket(const char* payload) {
 }
 
 void GreenhouseControlNode::sendTelemetry() {
-    if (!sensors || !events || sensorCount < 4 || eventCount < 3) {
+    if (!sensors || !events || sensorCount == 0 || eventCount == 0) {
         return;
     }
 
-    char payload[80];
-    snprintf(payload, sizeof(payload), "D,%d,%d,%d,%d,%d,%d,%d",
-             (int)sensorValue(0),
-             (int)sensorValue(1),
-             (int)sensorValue(2),
-             (int)sensorValue(3),
-             eventState(0) ? 1 : 0,
-             eventState(1) ? 1 : 0,
-             eventState(2) ? 1 : 0);
+    // Build the packet dynamically: "D,s0,s1,...,sN,e0,e1,...,eM"
+    // Payload budget: "D" + sensorCount * (1+4 digits) + eventCount * (1+1 digit) + null
+    char payload[128];
+    int pos = snprintf(payload, sizeof(payload), "D");
+    for (uint8_t i = 0; i < sensorCount && pos < (int)sizeof(payload) - 8; i++) {
+        pos += snprintf(payload + pos, sizeof(payload) - pos, ",%d", (int)sensorValue(i));
+    }
+    for (uint8_t i = 0; i < eventCount && pos < (int)sizeof(payload) - 4; i++) {
+        pos += snprintf(payload + pos, sizeof(payload) - pos, ",%d", eventState(i) ? 1 : 0);
+    }
     sendPacket(payload);
 }
 

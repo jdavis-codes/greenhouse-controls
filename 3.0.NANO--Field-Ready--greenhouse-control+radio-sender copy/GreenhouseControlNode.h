@@ -1,6 +1,8 @@
 #ifndef GREENHOUSE_CONTROL_NODE_H
 #define GREENHOUSE_CONTROL_NODE_H
 
+#define DISABLE_NODE_ALERTS 1
+
 #include <Arduino.h>
 
 class RYLR_LoRaAT_Software_Serial;
@@ -62,10 +64,11 @@ public:
 private:
     static const unsigned long ACTIVITY_BLINK_MS = 120;
     static const unsigned long SEND_INTERVAL_MS = 15000;
-    static const uint8_t MAX_SENSOR_BINDINGS = 8;
-    static const uint8_t MAX_EVENT_BINDINGS = 8;
-    static const uint8_t MAX_SETTING_BINDINGS = 8;
+    static const uint8_t MAX_SENSOR_BINDINGS = 6;
+    static const uint8_t MAX_EVENT_BINDINGS = 4;
+    static const uint8_t MAX_SETTING_BINDINGS = 6;
 
+#ifndef DISABLE_NODE_ALERTS
     struct SensorAlertConfig {
         bool lowEnabled;
         float lowThreshold;
@@ -86,6 +89,7 @@ private:
 
         EventAlertConfig() : enabled(true), lastStateKnown(false), lastState(false) {}
     };
+#endif
 
     struct PersistedState {
         uint32_t magic;
@@ -93,11 +97,13 @@ private:
         uint8_t eventCount;
         uint8_t settingCount;
         float settingValues[MAX_SETTING_BINDINGS];
+#ifndef DISABLE_NODE_ALERTS
         uint8_t sensorLowEnabled[MAX_SENSOR_BINDINGS];
         float sensorLowThreshold[MAX_SENSOR_BINDINGS];
         uint8_t sensorHighEnabled[MAX_SENSOR_BINDINGS];
         float sensorHighThreshold[MAX_SENSOR_BINDINGS];
         uint8_t eventEnabled[MAX_EVENT_BINDINGS];
+#endif
     };
 
     RYLR_LoRaAT_Software_Serial* radio;
@@ -117,31 +123,40 @@ private:
     uint8_t settingCount;
     SampleCallback sampleCallback;
 
+#ifndef DISABLE_NODE_ALERTS
     SensorAlertConfig sensorAlerts[MAX_SENSOR_BINDINGS];
     EventAlertConfig eventAlerts[MAX_EVENT_BINDINGS];
+#endif
 
     void loadPersistedState();
     void persistState();
     void applyPersistedState(const PersistedState& state);
-    void initializeEventAlertState();
     void saveSettingValue(const char* key, float value);
+    void writeStatusLed(bool redOn, bool greenOn, bool blueOn);
+
+#ifndef DISABLE_NODE_ALERTS
+    void initializeEventAlertState();
     void saveSensorAlert(uint8_t sensorIndex);
     void saveEventAlert(uint8_t eventIndex);
-    void writeStatusLed(bool redOn, bool greenOn, bool blueOn);
+#endif
+
     void showIdleStatusLed();
     void updateStatusLed(unsigned long now);
 
     void sendPacket(const char* payload);
     void sendTelemetry();
     void sendSettingSync(const char* key, float value);
-    void sendSensorAlertSync(uint8_t sensorIndex);
-    void sendEventAlertSync(uint8_t eventIndex);
     void sendFullStateSync();
 
+#ifndef DISABLE_NODE_ALERTS
+    void sendSensorAlertSync(uint8_t sensorIndex);
+    void sendEventAlertSync(uint8_t eventIndex);
     void evaluateSensorAlerts();
     void sendSensorAlertNotification(uint8_t sensorIndex, char direction, float currentValue, float threshold);
-    void setEventState(uint8_t eventIndex, bool newState, bool shouldNotify);
     void sendEventAlertNotification(uint8_t eventIndex, bool state);
+#endif
+
+    void setEventState(uint8_t eventIndex, bool newState, bool shouldNotify);
 
     float sensorValue(uint8_t sensorIndex) const;
     bool eventState(uint8_t eventIndex) const;
@@ -151,8 +166,11 @@ private:
 
     bool handleControlCommand(const char* deviceKey, int value);
     bool handleSettingCommand(const char* key, float value);
+
+#ifndef DISABLE_NODE_ALERTS
     void handleSensorAlertCommand(int sensorIndex, char direction, int enabled, float threshold);
     void handleEventAlertCommand(int eventIndex, int enabled);
+#endif
 };
 
 #endif

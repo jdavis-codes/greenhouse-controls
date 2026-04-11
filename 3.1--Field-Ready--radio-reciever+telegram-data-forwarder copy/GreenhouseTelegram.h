@@ -113,6 +113,9 @@ public:
     void syncSensorAlertConfig(int sensorIdx, bool lowEnabled, float lowThreshold, bool highEnabled, float highThreshold);
     void syncEventAlertConfig(int eventIdx, bool enabled);
 
+    // Call this after a new log entry is pushed to the buffer
+    void evaluateAlerts();
+
     // Data references to update
     void setLogBuffer(RingBuffer* buffer);
     RingBuffer* getLogBuffer() { return logBuffer; }
@@ -180,6 +183,10 @@ private:
     void sendGuideMenu(fb::ID chatID, uint32_t editMsgID);
     void sendSvgMenu(fb::ID chatID, uint32_t editMsgID);
     
+    // Storage
+    void loadPersistedAlerts();
+    void saveAlertSettings();
+
     // Graph generation
     void sendSnapshot(fb::ID chatID);
     uint32_t sendUnicodeGraph(fb::ID chatID, uint32_t editMsgID = 0);
@@ -207,6 +214,7 @@ private:
     String extractCommandName(const String& text, String& args) const;
     String normalizeToken(const String& text) const;
     String chatIDKey(fb::ID chatID) const;
+    int findSettingIndex(const char* key) const;
     int findSettingIndex(const String& token) const;
     int findEventIndex(const String& token) const;
     int findSensorIndex(const String& token) const;

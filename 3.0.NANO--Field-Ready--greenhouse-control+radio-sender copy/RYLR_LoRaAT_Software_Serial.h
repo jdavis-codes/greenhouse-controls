@@ -12,14 +12,10 @@
 
 #define READ_TIMEOUT_MS 100                 // 100 ms
 #define SEND_TIMEOUT_MS 1000                // 1 second
-#define MAX_DATA_LEN 100                    // 100 bytes of data
-#define MAX_TX_MSG MAX_DATA_LEN + 20
-#define MAX_RX_MSG MAX_DATA_LEN + 28
-#define RX_BUFFER_LEN (MAX_RX_MSG * 3)
-
-// Utility function to prompt for a device address over
-// the serial port.
-int promptUserForAddress();
+#define MAX_DATA_LEN 64                     // Reduced from 100 to 64 bytes
+#define MAX_TX_MSG (MAX_DATA_LEN + 20)
+#define MAX_RX_MSG (MAX_DATA_LEN + 28)
+#define RX_BUFFER_LEN (MAX_RX_MSG * 2)      // Reduced multiplier from 3 to 2
 
 // Received message
 // Points to data in the RX Buffer

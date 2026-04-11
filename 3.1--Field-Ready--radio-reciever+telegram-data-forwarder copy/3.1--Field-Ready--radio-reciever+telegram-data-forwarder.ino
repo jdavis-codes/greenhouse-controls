@@ -46,13 +46,15 @@ void printWiFiTroubleshooting(wl_status_t status);
 void scanAndListNearbyNetworks();
 static bool readLineFromPipe(Stream& pipe, char* buffer, size_t bufferLen);
 
-// Map settings mirroring the greenhouse controller script
+// activeSensors order MUST exactly match the sender's SensorBinding array order,
+// since sensor alert indices [0..N] are shared over LoRa between both nodes.
 SensorMetadata activeSensors[] = {
-    {"Green House Temperature", "°F", "#ff4d4d", &LogEntry::grnhouseTemp},
-    {"Ambient Temperature", "°F", "#ffb54d", &LogEntry::ambientTemp},
-    {"Green House Humidity", "%", "#007bff", &LogEntry::grnhouseHum},
-    {"Insolation", "%", "#ffff4d", &LogEntry::insolation},
-    {"Soil Moisture", "%", "#4dff4d", &LogEntry::soilMoisture}
+    {"Green House Temperature", "°F", "#ff4d4d", &LogEntry::grnhouseTemp},  // [0] GH_TEMP
+    {"Green House Humidity",    "%",  "#007bff", &LogEntry::grnhouseHum},   // [1] GH_HUM
+    {"Soil Moisture",          "%",  "#4dff4d", &LogEntry::soilMoisture},   // [2] SOIL
+    {"Insolation",             "%",  "#ffff4d", &LogEntry::insolation},     // [3] SUN
+    {"Ambient Temperature",    "°F", "#ffb54d", &LogEntry::ambientTemp},    // [4] AMB_TEMP
+    {"Ambient Humidity",       "%",  "#87ceeb", &LogEntry::ambientHum}      // [5] AMB_HUM
 };
 
 EventMetadata activeEvents[] = {
@@ -155,37 +157,48 @@ void loop() {
 void processIncomingDataPacket(const RYLR_LoRaAT_Message *message) {
     if (strncmp(message->data, "D,", 2) != 0) return;
 
-    int temp = 0, humidity = 0, moisture = 0, insolation = 0;
-    int fan_on = 0, motor_up = 0, water_on = 0;
+    const int numSensors = (int)(sizeof(activeSensors) / sizeof(activeSensors[0]));
+    const int numEvents  = (int)(sizeof(activeEvents)  / sizeof(activeEvents[0]));
+    const int expected   = numSensors + numEvents;
 
-    int parsed = sscanf(message->data, "D,%d,%d,%d,%d,%d,%d,%d",
-                        &temp, &humidity, &moisture, &insolation,
-                        &fan_on, &motor_up, &water_on);
-
-    if (parsed == 7) {
-        LogEntry newEntry;
-        newEntry.timestamp = getUnixTime();
-        newEntry.grnhouseTemp = temp;
-        newEntry.grnhouseHum = humidity;
-        newEntry.soilMoisture = moisture;
-        newEntry.insolation = insolation;
-        newEntry.ambientTemp = temp - 5; // Fake ambient offset
-        newEntry.ambientHum = humidity;
-        newEntry.fanOn = fan_on;
-        newEntry.motorUp = motor_up;
-        newEntry.waterOn = water_on;
-        
-        if (logBuffer) {
-            logBuffer->push_back(newEntry);
-        }
-
-        Serial.printf("Data Logged -> Temp: %dF, Fan: %d, Sides: %d, Water: %d\n", 
-                      temp, fan_on, motor_up, water_on);
-        
-        telBot.refreshDashboard();
-    } else {
-        Serial.printf("LoRa parse mismatch, parsed: %d\n", parsed);
+    // Parse all comma-separated integer values from the payload dynamically.
+    // The packet format is: "D,s0,s1,...,sN,e0,e1,...,eM"
+    // Sensor and event counts on this side MUST match the sender's binding arrays.
+    int values[16] = {};
+    int count = 0;
+    const char* p = message->data + 2; // skip "D,"
+    while (*p && count < expected) {
+        char* end;
+        values[count++] = (int)strtol(p, &end, 10);
+        if (end == p) break; // no conversion -- malformed packet
+        p = (*end == ',') ? end + 1 : end;
     }
+
+    if (count != expected) {
+        Serial.printf("LoRa parse mismatch, got %d values, expected %d\n", count, expected);
+        return;
+    }
+
+    // Populate LogEntry using pointer-to-member -- no positional hardcoding.
+    LogEntry newEntry;
+    newEntry.timestamp = getUnixTime();
+    for (int i = 0; i < numSensors; i++) {
+        newEntry.*(activeSensors[i].valueField) = (float)values[i];
+    }
+    for (int i = 0; i < numEvents; i++) {
+        newEntry.*(activeEvents[i].stateField) = values[numSensors + i] != 0;
+    }
+
+    if (logBuffer) {
+        logBuffer->push_back(newEntry);
+        telBot.evaluateAlerts();
+    }
+
+    Serial.printf("Data Logged -> Temp: %.0fF, Hum: %.0f%%, Soil: %.0f%%, Fan: %d, Sides: %d, Water: %d\n",
+                  newEntry.grnhouseTemp, newEntry.grnhouseHum, newEntry.soilMoisture,
+                  (int)newEntry.fanOn, (int)newEntry.motorUp, (int)newEntry.waterOn);
+
+    telBot.refreshDashboard();
 }
 
 void processSyncPacket(const RYLR_LoRaAT_Message *message) {
@@ -324,19 +337,16 @@ void onControlCommandRequested(const char* key, bool state) {
 }
 
 void onSensorAlertChanged(int sensorIdx, AlertThresholdType thresholdType, bool enabled, float threshold) {
-    char payload[40];
-    snprintf(payload, sizeof(payload), "A,S,%d,%c,%d,%.1f",
-             sensorIdx,
-             thresholdType == ALERT_THRESHOLD_LOW ? 'L' : 'H',
-             enabled ? 1 : 0,
-             threshold);
-    sendLoRaPayload(payload);
+    // The alert tracking is now server-side. We no longer explicitly write rules OUT over LoRa.
+    // Log it instead and rely on locally stored thresholds via Preferences.
+    Serial.printf("Server-Side ALERTS: Updated threshold %c for %s to %.2f (st: %d)\n", 
+                  thresholdType == ALERT_THRESHOLD_LOW ? 'L' : 'H',
+                  activeSensors[sensorIdx].name, threshold, enabled);
 }
 
 void onEventAlertChanged(int eventIdx, bool enabled) {
-    char payload[24];
-    snprintf(payload, sizeof(payload), "A,E,%d,%d", eventIdx, enabled ? 1 : 0);
-    sendLoRaPayload(payload);
+    Serial.printf("Server-Side ALERTS: Updated event alert for %s (st: %d)\n", 
+                  activeEvents[eventIdx].name, enabled);
 }
 
 void sendLoRaPayload(const char* payload) {

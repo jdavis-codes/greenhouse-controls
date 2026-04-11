@@ -1,8 +1,7 @@
 #include "GreenhouseControlNode.h"
 
-#include <stdio.h>
-#include <stdarg.h>
 #include <string.h>
+#include <stdlib.h>
 
 #if defined(ARDUINO_ARCH_ESP32)
 #include <Preferences.h>
@@ -15,13 +14,43 @@
 namespace {
 constexpr uint32_t PERSIST_MAGIC = 0x47484431UL;
 
-void debugLogf(const char* format, ...) {
-    char buffer[160];
-    va_list args;
-    va_start(args, format);
-    vsnprintf(buffer, sizeof(buffer), format, args);
-    va_end(args);
-    Serial.print(buffer);
+// Manual string helpers — avoids linking printf/scanf on AVR (~3-4 KB savings).
+int appendStr(char* buf, int pos, int maxLen, const char* s) {
+    while (*s && pos + 1 < maxLen) buf[pos++] = *s++;
+    buf[pos] = '\0';
+    return pos;
+}
+int appendChar(char* buf, int pos, int maxLen, char c) {
+    if (pos + 1 < maxLen) { buf[pos++] = c; buf[pos] = '\0'; }
+    return pos;
+}
+int appendInt(char* buf, int pos, int maxLen, long val) {
+    char tmp[12];
+    ltoa(val, tmp, 10);
+    return appendStr(buf, pos, maxLen, tmp);
+}
+int appendFloat1(char* buf, int pos, int maxLen, float val) {
+    if (val < 0) { pos = appendChar(buf, pos, maxLen, '-'); val = -val; }
+    int whole = (int)val;
+    int frac = (int)(val * 10.0f) % 10;
+    pos = appendInt(buf, pos, maxLen, whole);
+    pos = appendChar(buf, pos, maxLen, '.');
+    return appendInt(buf, pos, maxLen, frac);
+}
+// Minimal float parser — avoids linking strtod/sscanf float support.
+float parseSimpleFloat(const char* s) {
+    bool neg = false;
+    if (*s == '-') { neg = true; s++; }
+    long whole = 0;
+    while (*s >= '0' && *s <= '9') { whole = whole * 10 + (*s - '0'); s++; }
+    float result = (float)whole;
+    if (*s == '.') {
+        s++;
+        float frac = 0.0f, div = 10.0f;
+        while (*s >= '0' && *s <= '9') { frac += (*s - '0') / div; div *= 10.0f; s++; }
+        result += frac;
+    }
+    return neg ? -result : result;
 }
 }
 
@@ -69,8 +98,10 @@ void GreenhouseControlNode::begin(RYLR_LoRaAT_Software_Serial* radioLink,
     serialReadIndex = 0;
 
     loadPersistedState();
+#ifndef DISABLE_NODE_ALERTS
     initializeEventAlertState();
     evaluateSensorAlerts();
+#endif
     sendFullStateSync();
     sendTelemetry();
 }
@@ -120,7 +151,9 @@ void GreenhouseControlNode::tick(unsigned long now) {
         sampleCallback(now);
     }
 
+#ifndef DISABLE_NODE_ALERTS
     evaluateSensorAlerts();
+#endif
     updateStatusLed(now);
 
     if (now - lastSendMillis >= SEND_INTERVAL_MS) {
@@ -133,42 +166,54 @@ void GreenhouseControlNode::handleIncomingMessage(const char* data) {
     if (!data || !data[0]) return;
 
     if (strncmp(data, "C,", 2) == 0) {
+        const char* p = data + 2;
+        const char* comma = strchr(p, ',');
+        if (!comma || comma == p || (comma - p) >= 16) return;
         char deviceKey[16];
-        int value = 0;
-        if (sscanf(data + 2, "%15[^,],%d", deviceKey, &value) == 2 && handleControlCommand(deviceKey, value)) {
+        memcpy(deviceKey, p, comma - p);
+        deviceKey[comma - p] = '\0';
+        int value = atoi(comma + 1);
+        if (handleControlCommand(deviceKey, value)) {
             sendTelemetry();
         }
         return;
     }
 
     if (strncmp(data, "S,", 2) == 0) {
+        const char* p = data + 2;
+        const char* comma = strchr(p, ',');
+        if (!comma || comma == p || (comma - p) >= 16) return;
         char key[16];
-        float value = 0.0f;
-        if (sscanf(data + 2, "%15[^,],%f", key, &value) == 2) {
-            handleSettingCommand(key, value);
-        }
+        memcpy(key, p, comma - p);
+        key[comma - p] = '\0';
+        float value = parseSimpleFloat(comma + 1);
+        handleSettingCommand(key, value);
         return;
     }
 
+#ifndef DISABLE_NODE_ALERTS
     if (strncmp(data, "A,S,", 4) == 0) {
-        int sensorIndex = -1;
-        char direction = '\0';
-        int enabled = 0;
-        float threshold = 0.0f;
-        if (sscanf(data, "A,S,%d,%c,%d,%f", &sensorIndex, &direction, &enabled, &threshold) == 4) {
-            handleSensorAlertCommand(sensorIndex, direction, enabled, threshold);
-        }
+        const char* p = data + 4;
+        int sensorIndex = atoi(p);
+        p = strchr(p, ','); if (!p) return; p++;
+        char direction = *p;
+        p = strchr(p, ','); if (!p) return; p++;
+        int enabled = atoi(p);
+        p = strchr(p, ','); if (!p) return; p++;
+        float threshold = parseSimpleFloat(p);
+        handleSensorAlertCommand(sensorIndex, direction, enabled, threshold);
         return;
     }
 
     if (strncmp(data, "A,E,", 4) == 0) {
-        int eventIndex = -1;
-        int enabled = 0;
-        if (sscanf(data, "A,E,%d,%d", &eventIndex, &enabled) == 2) {
-            handleEventAlertCommand(eventIndex, enabled);
-        }
+        const char* p = data + 4;
+        int eventIndex = atoi(p);
+        p = strchr(p, ','); if (!p) return;
+        int enabled = atoi(p + 1);
+        handleEventAlertCommand(eventIndex, enabled);
         return;
     }
+#endif
 
     if (strcmp(data, "Q,SYNC") == 0) {
         sendFullStateSync();
@@ -209,6 +254,7 @@ void GreenhouseControlNode::persistState() {
         state.settingValues[i] = settings[i].valueRef ? *(settings[i].valueRef) : 0.0f;
     }
 
+#ifndef DISABLE_NODE_ALERTS
     for (uint8_t i = 0; i < sensorCount; i++) {
         state.sensorLowEnabled[i] = sensorAlerts[i].lowEnabled ? 1 : 0;
         state.sensorLowThreshold[i] = sensorAlerts[i].lowThreshold;
@@ -219,6 +265,7 @@ void GreenhouseControlNode::persistState() {
     for (uint8_t i = 0; i < eventCount; i++) {
         state.eventEnabled[i] = eventAlerts[i].enabled ? 1 : 0;
     }
+#endif
 
 #if defined(ARDUINO_ARCH_ESP32)
     Preferences preferences;
@@ -238,6 +285,7 @@ void GreenhouseControlNode::applyPersistedState(const PersistedState& state) {
         }
     }
 
+#ifndef DISABLE_NODE_ALERTS
     uint8_t applySensorCount = min(sensorCount, state.sensorCount);
     for (uint8_t i = 0; i < applySensorCount; i++) {
         sensorAlerts[i].lowEnabled = state.sensorLowEnabled[i] != 0;
@@ -252,19 +300,21 @@ void GreenhouseControlNode::applyPersistedState(const PersistedState& state) {
     for (uint8_t i = 0; i < applyEventCount; i++) {
         eventAlerts[i].enabled = state.eventEnabled[i] != 0;
     }
-}
-
-void GreenhouseControlNode::initializeEventAlertState() {
-    for (uint8_t i = 0; i < eventCount; i++) {
-        eventAlerts[i].lastStateKnown = true;
-        eventAlerts[i].lastState = eventState(i);
-    }
+#endif
 }
 
 void GreenhouseControlNode::saveSettingValue(const char* key, float value) {
     (void)key;
     (void)value;
     persistState();
+}
+
+#ifndef DISABLE_NODE_ALERTS
+void GreenhouseControlNode::initializeEventAlertState() {
+    for (uint8_t i = 0; i < eventCount; i++) {
+        eventAlerts[i].lastStateKnown = true;
+        eventAlerts[i].lastState = eventState(i);
+    }
 }
 
 void GreenhouseControlNode::saveSensorAlert(uint8_t sensorIndex) {
@@ -276,6 +326,7 @@ void GreenhouseControlNode::saveEventAlert(uint8_t eventIndex) {
     if (eventIndex >= eventCount) return;
     persistState();
 }
+#endif
 
 void GreenhouseControlNode::writeStatusLed(bool redOn, bool greenOn, bool blueOn) {
 #if defined(ARDUINO_ARCH_ESP32) && defined(LEDR) && defined(LEDG) && defined(LEDB)
@@ -305,7 +356,6 @@ void GreenhouseControlNode::sendPacket(const char* payload) {
     if (!payload || !payload[0]) return;
 
     if (activeDataPipe == uart_rx_tx && serialDataPipe) {
-        debugLogf("TX(UART): %s\n", payload);
         noteActivity(millis());
         serialDataPipe->println(payload);
         return;
@@ -313,46 +363,56 @@ void GreenhouseControlNode::sendPacket(const char* payload) {
 
     if (!radio) return;
 
-    debugLogf("TX -> [%d]: %s\n", remoteAddress, payload);
     noteActivity(millis());
     radio->startTxMessage();
     radio->addTxData(payload);
-    int result = radio->sendTxMessage(remoteAddress);
-    debugLogf("Send result: %d\n", result);
+    radio->sendTxMessage(remoteAddress);
 }
 
 void GreenhouseControlNode::sendTelemetry() {
-    if (!sensors || !events || sensorCount < 4 || eventCount < 3) {
+    if (!sensors || !events || sensorCount == 0 || eventCount == 0) {
         return;
     }
 
-    char payload[80];
-    snprintf(payload, sizeof(payload), "D,%d,%d,%d,%d,%d,%d,%d",
-             (int)sensorValue(0),
-             (int)sensorValue(1),
-             (int)sensorValue(2),
-             (int)sensorValue(3),
-             eventState(0) ? 1 : 0,
-             eventState(1) ? 1 : 0,
-             eventState(2) ? 1 : 0);
+    // Build the packet dynamically: "D,s0,s1,...,sN,e0,e1,...,eM"
+    char payload[64];
+    int pos = appendChar(payload, 0, sizeof(payload), 'D');
+    for (uint8_t i = 0; i < sensorCount && pos < (int)sizeof(payload) - 8; i++) {
+        pos = appendChar(payload, pos, sizeof(payload), ',');
+        pos = appendInt(payload, pos, sizeof(payload), (int)sensorValue(i));
+    }
+    for (uint8_t i = 0; i < eventCount && pos < (int)sizeof(payload) - 4; i++) {
+        pos = appendChar(payload, pos, sizeof(payload), ',');
+        pos = appendChar(payload, pos, sizeof(payload), eventState(i) ? '1' : '0');
+    }
     sendPacket(payload);
 }
 
 void GreenhouseControlNode::sendSettingSync(const char* key, float value) {
     char payload[32];
-    snprintf(payload, sizeof(payload), "R,S,%s,%.1f", key, (double)value);
+    int pos = appendStr(payload, 0, sizeof(payload), "R,S,");
+    pos = appendStr(payload, pos, sizeof(payload), key);
+    pos = appendChar(payload, pos, sizeof(payload), ',');
+    appendFloat1(payload, pos, sizeof(payload), value);
     sendPacket(payload);
 }
 
+#ifndef DISABLE_NODE_ALERTS
 void GreenhouseControlNode::sendSensorAlertSync(uint8_t sensorIndex) {
     if (sensorIndex >= sensorCount) return;
 
-    char payload[64];
+    char payload[48];
     const SensorAlertConfig& alert = sensorAlerts[sensorIndex];
-    snprintf(payload, sizeof(payload), "R,A,%u,%d,%.1f,%d,%.1f",
-             sensorIndex,
-             alert.lowEnabled ? 1 : 0, (double)alert.lowThreshold,
-             alert.highEnabled ? 1 : 0, (double)alert.highThreshold);
+    int pos = appendStr(payload, 0, sizeof(payload), "R,A,");
+    pos = appendInt(payload, pos, sizeof(payload), sensorIndex);
+    pos = appendChar(payload, pos, sizeof(payload), ',');
+    pos = appendInt(payload, pos, sizeof(payload), alert.lowEnabled ? 1 : 0);
+    pos = appendChar(payload, pos, sizeof(payload), ',');
+    pos = appendFloat1(payload, pos, sizeof(payload), alert.lowThreshold);
+    pos = appendChar(payload, pos, sizeof(payload), ',');
+    pos = appendInt(payload, pos, sizeof(payload), alert.highEnabled ? 1 : 0);
+    pos = appendChar(payload, pos, sizeof(payload), ',');
+    appendFloat1(payload, pos, sizeof(payload), alert.highThreshold);
     sendPacket(payload);
 }
 
@@ -360,9 +420,13 @@ void GreenhouseControlNode::sendEventAlertSync(uint8_t eventIndex) {
     if (eventIndex >= eventCount) return;
 
     char payload[32];
-    snprintf(payload, sizeof(payload), "R,E,%u,%d", eventIndex, eventAlerts[eventIndex].enabled ? 1 : 0);
+    int pos = appendStr(payload, 0, sizeof(payload), "R,E,");
+    pos = appendInt(payload, pos, sizeof(payload), eventIndex);
+    pos = appendChar(payload, pos, sizeof(payload), ',');
+    appendInt(payload, pos, sizeof(payload), eventAlerts[eventIndex].enabled ? 1 : 0);
     sendPacket(payload);
 }
+#endif
 
 void GreenhouseControlNode::sendFullStateSync() {
     for (uint8_t i = 0; i < settingCount; i++) {
@@ -370,14 +434,17 @@ void GreenhouseControlNode::sendFullStateSync() {
         sendSettingSync(settings[i].key, *(settings[i].valueRef));
     }
 
+#ifndef DISABLE_NODE_ALERTS
     for (uint8_t i = 0; i < sensorCount; i++) {
         sendSensorAlertSync(i);
     }
     for (uint8_t i = 0; i < eventCount; i++) {
         sendEventAlertSync(i);
     }
+#endif
 }
 
+#ifndef DISABLE_NODE_ALERTS
 void GreenhouseControlNode::evaluateSensorAlerts() {
     for (uint8_t i = 0; i < sensorCount; i++) {
         float value = sensorValue(i);
@@ -398,20 +465,31 @@ void GreenhouseControlNode::evaluateSensorAlerts() {
 }
 
 void GreenhouseControlNode::sendSensorAlertNotification(uint8_t sensorIndex, char direction, float currentValue, float threshold) {
-    char payload[64];
-    snprintf(payload, sizeof(payload), "N,S,%u,%c,%.1f,%.1f", sensorIndex, direction, (double)currentValue, (double)threshold);
+    char payload[48];
+    int pos = appendStr(payload, 0, sizeof(payload), "N,S,");
+    pos = appendInt(payload, pos, sizeof(payload), sensorIndex);
+    pos = appendChar(payload, pos, sizeof(payload), ',');
+    pos = appendChar(payload, pos, sizeof(payload), direction);
+    pos = appendChar(payload, pos, sizeof(payload), ',');
+    pos = appendFloat1(payload, pos, sizeof(payload), currentValue);
+    pos = appendChar(payload, pos, sizeof(payload), ',');
+    appendFloat1(payload, pos, sizeof(payload), threshold);
     sendPacket(payload);
 }
+#endif
 
 void GreenhouseControlNode::setEventState(uint8_t eventIndex, bool newState, bool shouldNotify) {
     if (eventIndex >= eventCount || !events || !events[eventIndex].stateRef) return;
 
+#ifndef DISABLE_NODE_ALERTS
     bool previousState = *(events[eventIndex].stateRef);
+#endif
     *(events[eventIndex].stateRef) = newState;
     if (events[eventIndex].onSetState) {
         events[eventIndex].onSetState(newState);
     }
 
+#ifndef DISABLE_NODE_ALERTS
     EventAlertConfig& alert = eventAlerts[eventIndex];
     if (!alert.lastStateKnown) {
         alert.lastStateKnown = true;
@@ -423,13 +501,21 @@ void GreenhouseControlNode::setEventState(uint8_t eventIndex, bool newState, boo
         sendEventAlertNotification(eventIndex, newState);
     }
     alert.lastState = newState;
+#else
+    (void)shouldNotify;
+#endif
 }
 
+#ifndef DISABLE_NODE_ALERTS
 void GreenhouseControlNode::sendEventAlertNotification(uint8_t eventIndex, bool state) {
-    char payload[32];
-    snprintf(payload, sizeof(payload), "N,E,%u,%d", eventIndex, state ? 1 : 0);
+    char payload[16];
+    int pos = appendStr(payload, 0, sizeof(payload), "N,E,");
+    pos = appendInt(payload, pos, sizeof(payload), eventIndex);
+    pos = appendChar(payload, pos, sizeof(payload), ',');
+    appendChar(payload, pos, sizeof(payload), state ? '1' : '0');
     sendPacket(payload);
 }
+#endif
 
 float GreenhouseControlNode::sensorValue(uint8_t sensorIndex) const {
     if (!sensors || sensorIndex >= sensorCount || !sensors[sensorIndex].valueRef) return 0.0f;
@@ -463,32 +549,24 @@ int GreenhouseControlNode::findSettingIndexByKey(const char* key) const {
 
 bool GreenhouseControlNode::handleControlCommand(const char* deviceKey, int value) {
     int eventIndex = findEventIndexByKey(deviceKey);
-    if (eventIndex < 0) {
-        debugLogf("Unknown control command: %s\n", deviceKey ? deviceKey : "<null>");
-        return false;
-    }
+    if (eventIndex < 0) return false;
 
     bool state = value == 1;
     setEventState((uint8_t)eventIndex, state, true);
-    debugLogf("CONTROL %s = %s\n", deviceKey, state ? "ON" : "OFF");
     return true;
 }
 
 bool GreenhouseControlNode::handleSettingCommand(const char* key, float value) {
     int settingIndex = findSettingIndexByKey(key);
-    if (settingIndex < 0 || !settings[settingIndex].valueRef) {
-        debugLogf("Unknown setpoint key: %s\n", key ? key : "<null>");
-        return false;
-    }
+    if (settingIndex < 0 || !settings[settingIndex].valueRef) return false;
 
     *(settings[settingIndex].valueRef) = value;
     saveSettingValue(key, value);
     sendSettingSync(key, value);
-
-    debugLogf("SETPOINT %s = %.1f\n", key, value);
     return true;
 }
 
+#ifndef DISABLE_NODE_ALERTS
 void GreenhouseControlNode::handleSensorAlertCommand(int sensorIndex, char direction, int enabled, float threshold) {
     if (sensorIndex < 0 || sensorIndex >= sensorCount) return;
 
@@ -519,3 +597,4 @@ void GreenhouseControlNode::handleEventAlertCommand(int eventIndex, int enabled)
     saveEventAlert(eventIndex);
     sendEventAlertSync(eventIndex);
 }
+#endif

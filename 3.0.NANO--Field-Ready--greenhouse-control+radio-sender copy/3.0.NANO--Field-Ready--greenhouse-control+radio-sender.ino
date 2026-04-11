@@ -16,6 +16,7 @@ OUTPUTS:
 
 
 //========================================================================BEGIN DECLARATIONS=========================================================
+
 #include <Arduino.h>
 #include <SoftwareSerial.h>
 #include "GreenhouseControlNode.h"
@@ -98,7 +99,6 @@ unsigned long startTime2 = 0;
 //====================================begin declarations for tone melody subroutines================================
 #include "pitches.h" //gets library of tones
 #define REST 0       //defines rest as zero tones
-int tempo;           //stores the tempo of the songs
 //=======end declarations for tone melody subroutines=============
 
 RYLR_LoRaAT_Software_Serial rylr;
@@ -152,6 +152,16 @@ GreenhouseControlNode::SettingBinding settings[] = {
 };
 
 
+//#define ENABLE_DEBUG_SERIAL // Uncomment to enable verbose Serial Monitor output
+
+#ifdef ENABLE_DEBUG_SERIAL
+  #define DEBUG_PRINT(...)   Serial.print(__VA_ARGS__)
+  #define DEBUG_PRINTLN(...) Serial.println(__VA_ARGS__)
+#else
+  #define DEBUG_PRINT(...)
+  #define DEBUG_PRINTLN(...)
+#endif
+
 //==============================================================BEGIN SET UP======================================================================
 
 void setup() {
@@ -179,19 +189,20 @@ void setup() {
       rylr.setSerial(&radioSerial);
 
       int result = rylr.checkStatus();
-      Serial.print(F("LoRa status: "));
-      Serial.println(result);
+      (void)result;
+      DEBUG_PRINT(F("LoRa:"));
+      DEBUG_PRINTLN(result);
 
       rylr.setAddress(LOCAL_ADDRESS);
       rylr.setRFPower(14);
       greenhouseNode.begin(&rylr, REMOTE_ADDRESS, data_pipe);
-      Serial.println(F("Greenhouse sender ready - transmitting via the rylr RADIO data pipe."));
+      DEBUG_PRINTLN(F("Sender ready (radio)"));
       break;
     }
     case uart_rx_tx: {
       radioSerial.begin(9600);
       greenhouseNode.begin(nullptr, REMOTE_ADDRESS, data_pipe, &radioSerial);
-      Serial.println(F("Greenhouse sender ready - transmitting via the UART RX/TX data pipe."));
+      DEBUG_PRINTLN(F("Sender ready (uart)"));
       break;
     }
   }
@@ -233,17 +244,13 @@ void loop() {
 
 //===========================================================SETUP SUBROUTINES================================================================
 void setupSD() {
-  Serial.print(F("Initializing SD card..."));
+  DEBUG_PRINT(F("SD init..."));
 
   if (!SD.begin(chipSelect)) {
-    Serial.println(F("initialization failed. Things to check:"));
-    Serial.println(F("1. is a card inserted?"));
-    Serial.println(F("2. is your wiring correct?"));
-    Serial.println(F("3. did you change the chipSelect pin to match your shield or module?"));
-    Serial.println(F("Note: press reset button on the board and reopen this Serial Monitor after fixing your issue!"));
+    DEBUG_PRINTLN(F("FAIL! Check card/wiring."));
     while (true);
   }
-  Serial.println(F("SD initialization done."));
+  DEBUG_PRINTLN(F("OK"));
 }
 
 void setupLCD() {
@@ -342,50 +349,30 @@ void displayLCD() {
 }
 
 void printToMonitor() {
+#ifdef ENABLE_DEBUG_SERIAL
 //=====================================================SUBROUTINE TO PRINT TO SERIAL MONITOR===========================================================
-  //send date and time to the serial monitor
   DateTime now = rtc.now();
-  Serial.print(now.timestamp(DateTime::TIMESTAMP_DATE));
-  Serial.print(F(" -- "));
-  Serial.println(now.timestamp(DateTime::TIMESTAMP_TIME));
+  DEBUG_PRINT(now.year(), DEC); DEBUG_PRINT('/');
+  DEBUG_PRINT(now.month(), DEC); DEBUG_PRINT('/');
+  DEBUG_PRINT(now.day(), DEC); DEBUG_PRINT(' ');
+  DEBUG_PRINT(now.hour(), DEC); DEBUG_PRINT(':');
+  DEBUG_PRINT(now.minute(), DEC); DEBUG_PRINT(':');
+  DEBUG_PRINTLN(now.second(), DEC);
 
-  //print temperature and humidity to the serial monitor
-  Serial.print(F("Greenhouse Temperature F:  "));
-  Serial.println(greenhouseTemp);
-  Serial.print(F("Greenhouse Humidity:  "));
-  Serial.println(greenhouseHumidity);
+  DEBUG_PRINT(F("GH T:")); DEBUG_PRINT(greenhouseTemp);
+  DEBUG_PRINT(F(" H:")); DEBUG_PRINTLN(greenhouseHumidity);
+  DEBUG_PRINT(F("AM T:")); DEBUG_PRINT(ambientTemp);
+  DEBUG_PRINT(F(" H:")); DEBUG_PRINTLN(ambientHumidity);
+  DEBUG_PRINT(F("Soil:")); DEBUG_PRINTLN(soilMoisture);
+  DEBUG_PRINT(F("Sun:"));  DEBUG_PRINTLN(insolation);
 
-  Serial.print(F("Ambient Temperature F:  "));
-  Serial.println(ambientTemp);
-  Serial.print(F("Ambient Humidity:  "));
-  Serial.println(ambientHumidity);
-
-  Serial.print(F("Soil Moisture:  "));
-  Serial.println(soilMoisture);
-
-  Serial.print(F("Sunlight Insolation:  "));
-  Serial.println(insolation);
-
-  if (sidesUp == true) {
-    Serial.println(F("motor is UP"));
-  } else {
-    Serial.println(F("motor is DOWN"));
-  }
-
-  if (fanOn == true) {
-    Serial.println(F("fan is ON"));
-  } else {
-    Serial.println(F("fan is OFF"));
-  }
-
-  if (irrigationOn == true) {
-    Serial.println(F("water is ON"));
-  } else {
-    Serial.println(F("water is OFF"));
-  }
+  DEBUG_PRINT(F("Sides:")); DEBUG_PRINTLN(sidesUp ? F("UP") : F("DN"));
+  DEBUG_PRINT(F("Fan:"));   DEBUG_PRINTLN(fanOn ? F("ON") : F("OFF"));
+  DEBUG_PRINT(F("Water:")); DEBUG_PRINTLN(irrigationOn ? F("ON") : F("OFF"));
 
   delay(50);
 //=======================================================END SERIAL MONITOR SUBROUTINE===============================================
+#endif
 }
 
 void writeToSD() {
@@ -397,11 +384,14 @@ void writeToSD() {
   //if the file opened okay, write to it:
   if (myFile) {
     DateTime now = rtc.now();
-    Serial.print(F("Writing to grnhs.txt..."));
+    DEBUG_PRINT(F("SD write..."));
     //with the file open, write the date, time, temperature, and humidity separated by commas
-    myFile.print(now.timestamp(DateTime::TIMESTAMP_DATE));
-    myFile.print(F(","));
-    myFile.print(now.timestamp(DateTime::TIMESTAMP_TIME));
+    myFile.print(now.year(), DEC); myFile.print('/');
+    myFile.print(now.month(), DEC); myFile.print('/');
+    myFile.print(now.day(), DEC); myFile.print(',');
+    myFile.print(now.hour(), DEC); myFile.print(':');
+    myFile.print(now.minute(), DEC); myFile.print(':');
+    myFile.print(now.second(), DEC);
 
     myFile.print(F(","));
     myFile.print(greenhouseTemp);
@@ -422,10 +412,10 @@ void writeToSD() {
 
     //close the file:
     myFile.close();
-    Serial.println(F("done."));
+    DEBUG_PRINTLN(F("ok"));
   } else {
     //if the file didn't open, print an error:
-    Serial.println(F("error opening grnhs.txt"));
+    DEBUG_PRINTLN(F("SD err"));
   }
   delay(100);
 //=======================================================END MICROSD CARD SUBROUTINE=======================================================
@@ -436,16 +426,16 @@ void printDHTError(int chk) {
   switch (chk)
   {
   case DHTLIB_OK:
-    Serial.print(F("DHT22 SENSOR OK,\t"));
+    DEBUG_PRINT(F("DHT22 SENSOR OK,\t"));
     break;
   case DHTLIB_ERROR_CHECKSUM:
-    Serial.print(F("DHT22 Checksum error,\t"));
+    DEBUG_PRINT(F("DHT22 Checksum error,\t"));
     break;
   case DHTLIB_ERROR_TIMEOUT:
-    Serial.print(F("DHT22 Time out error,\t"));
+    DEBUG_PRINT(F("DHT22 Time out error,\t"));
     break;
   default:
-    Serial.print(F("DHT22 Unknown error,\t"));
+    DEBUG_PRINT(F("DHT22 Unknown error,\t"));
     break;
   }
 }
@@ -524,15 +514,15 @@ void logicAndControl() {
 
 // Callbacks fired when the Telegram forwarder sends remote control commands over LoRa
 void onFanSet(bool state) {
-  Serial.print(F("[CTRL] FAN -> "));
-  Serial.println(state ? F("ON") : F("OFF"));
+  DEBUG_PRINT(F("[CTRL] FAN -> "));
+  DEBUG_PRINTLN(state ? F("ON") : F("OFF"));
   digitalWrite(relayZeroPin, state ? HIGH : LOW); //fan relay
   digitalWrite(relayOnePin,  state ? HIGH : LOW); //louver relay (always moves with the fan)
 }
 
 void onSidesSet(bool state) {
-  Serial.print(F("[CTRL] SIDES -> "));
-  Serial.println(state ? F("UP") : F("DOWN"));
+  DEBUG_PRINT(F("[CTRL] SIDES -> "));
+  DEBUG_PRINTLN(state ? F("UP") : F("DOWN"));
   if (state) {                                //open the sides
     digitalWrite(relayTwoPin,   HIGH);
     delay(5000);
@@ -545,8 +535,8 @@ void onSidesSet(bool state) {
 }
 
 void onWaterSet(bool state) {
-  Serial.print(F("[CTRL] WATER -> "));
-  Serial.println(state ? F("ON") : F("OFF"));
+  DEBUG_PRINT(F("[CTRL] WATER -> "));
+  DEBUG_PRINTLN(state ? F("ON") : F("OFF"));
   digitalWrite(relayFourPin, state ? HIGH : LOW); //irrigation solenoid relay
 }
 
@@ -560,27 +550,22 @@ void receiveReplies() {
       if (!message) return;
 
       greenhouseNode.noteActivity(millis());
-      Serial.print(F("RX from "));
-      Serial.print(message->from_address);
-      Serial.print(F(" (RSSI "));
-      Serial.print(message->rssi);
-      Serial.print(F(", SNR "));
-      Serial.print(message->snr);
-      Serial.print(F(") ["));
-      Serial.print(message->data_len);
-      Serial.print(F(" bytes]: "));
-      Serial.println(message->data);
+      DEBUG_PRINT(F("RX "));
+      DEBUG_PRINT(message->from_address);
+      DEBUG_PRINT(' ');
+      DEBUG_PRINT(message->rssi);
+      DEBUG_PRINT(' ');
+      DEBUG_PRINTLN(message->data);
 
       greenhouseNode.handleIncomingMessage(message->data);
       break;
     }
     case uart_rx_tx: {
-      char line[128];
+      char line[64];
       if (!greenhouseNode.readLineFromSerial(line, sizeof(line))) return;
 
       greenhouseNode.noteActivity(millis());
-      Serial.print(F("RX UART: "));
-      Serial.println(line);
+      DEBUG_PRINTLN(line);
       greenhouseNode.handleIncomingMessage(line);
       break;
     }
@@ -590,123 +575,71 @@ void receiveReplies() {
 //=============================================================END RECEIVE AND PROCESS INCOMING LORA MESSAGES============================
 
 
-//==================================================================SUBROUTINE TO PLAY BEETHOVEN========================================================
- void tone_melody_beethoven() {
-  // notes of the melody followed by the duration.
-  // a 4 means a quarter note, 8 an eighth, 16 a sixteenth, so on
-  // !!negative numbers are used to represent dotted notes,
-  // so -4 means a dotted quarter note, that is, a quarter plus an eighth!!
-  int melody[] = {
+//==================================================================MELODY DATA AND PLAYBACK=========================================================
 
-    NOTE_E4, 4,  NOTE_E4, 4,  NOTE_F4, 4,  NOTE_G4, 4, //1
-    NOTE_G4, 4,  NOTE_F4, 4,  NOTE_E4, 4,  NOTE_D4, 4,
-    NOTE_C4, 4,  NOTE_C4, 4,  NOTE_D4, 4,  NOTE_E4, 4,
-    NOTE_E4, -4, NOTE_D4, 8,  NOTE_D4, 2,
+// Melody data lives in PROGMEM to avoid copying to the stack at call time.
+// Each melody is an array of (pitch, duration) pairs.
+// Positive durations are regular notes; negative durations are dotted notes.
 
-    NOTE_E4, 4,  NOTE_E4, 4,  NOTE_F4, 4,  NOTE_G4, 4, //4
-    NOTE_G4, 4,  NOTE_F4, 4,  NOTE_E4, 4,  NOTE_D4, 4,
-    NOTE_C4, 4,  NOTE_C4, 4,  NOTE_D4, 4,  NOTE_E4, 4,
-    NOTE_D4, -4, NOTE_C4, 8,  NOTE_C4, 2,
-  };
-  tempo = 114;
+static const int melody_beethoven[] PROGMEM = {
+  NOTE_E4, 4,  NOTE_E4, 4,  NOTE_F4, 4,  NOTE_G4, 4, //1
+  NOTE_G4, 4,  NOTE_F4, 4,  NOTE_E4, 4,  NOTE_D4, 4,
+  NOTE_C4, 4,  NOTE_C4, 4,  NOTE_D4, 4,  NOTE_E4, 4,
+  NOTE_E4, -4, NOTE_D4, 8,  NOTE_D4, 2,
 
-  // sizeof gives the number of bytes, each int value is composed of two bytes (16 bits)
-  // there are two values per note (pitch and duration), so for each note there are four bytes
-  int notes = sizeof(melody) / sizeof(melody[0]) / 2;
+  NOTE_E4, 4,  NOTE_E4, 4,  NOTE_F4, 4,  NOTE_G4, 4, //4
+  NOTE_G4, 4,  NOTE_F4, 4,  NOTE_E4, 4,  NOTE_D4, 4,
+  NOTE_C4, 4,  NOTE_C4, 4,  NOTE_D4, 4,  NOTE_E4, 4,
+  NOTE_D4, -4, NOTE_C4, 8,  NOTE_C4, 2,
+};
+static const int melody_beethoven_len = sizeof(melody_beethoven) / sizeof(melody_beethoven[0]);
 
-  // this calculates the duration of a whole note in ms
-  int wholenote = (60000 * 4) / tempo;
+static const int melody_brahms[] PROGMEM = {
+  // Wiegenlied (Brahms' Lullaby)
+  NOTE_G4, 4, NOTE_G4, 4, //1
+  NOTE_AS4, -4, NOTE_G4, 8, NOTE_G4, 4,
+  NOTE_AS4, 4, REST, 4, NOTE_G4, 8, NOTE_AS4, 8,
+  NOTE_DS5, 4, NOTE_D5, -4, NOTE_C5, 8,
+  NOTE_C5, 4, NOTE_AS4, 4, NOTE_F4, 8, NOTE_G4, 8,
+  NOTE_GS4, 4, NOTE_F4, 4, NOTE_F4, 8, NOTE_G4, 8,
+  NOTE_GS4, 4, REST, 4, NOTE_F4, 8, NOTE_GS4, 8,
+  NOTE_D5, 8, NOTE_C5, 8, NOTE_AS4, 4, NOTE_D5, 4, NOTE_DS5, 8,
+};
+static const int melody_brahms_len = sizeof(melody_brahms) / sizeof(melody_brahms[0]);
 
-  int divider = 0, noteDuration = 0;
+// Single playback engine that reads note data from PROGMEM
+void playMelodyPROGMEM(const int* melodyPgm, int numElements, int tempoVal) {
+  int notes = numElements / 2;
+  int wholenote = (60000L * 4) / tempoVal;
+  int divider, noteDuration;
 
-  // iterate over the notes of the melody.
-  // Remember, the array is twice the number of notes (notes + durations)
-  for (int thisNote = 0; thisNote < notes * 2; thisNote = thisNote + 2) {
+  for (int i = 0; i < notes * 2; i += 2) {
+    int pitch = pgm_read_word_near(&melodyPgm[i]);
+    divider   = pgm_read_word_near(&melodyPgm[i + 1]);
 
-    // calculates the duration of each note
-    divider = melody[thisNote + 1];
     if (divider > 0) {
-      // regular note, just proceed
-      noteDuration = (wholenote) / divider;
-    } else if (divider < 0) {
-      // dotted notes are represented with negative durations!!
-      noteDuration = (wholenote) / abs(divider);
-      noteDuration *= 1.5; // increases the duration in half for dotted notes
+      noteDuration = wholenote / divider;
+    } else {
+      noteDuration = wholenote / abs(divider);
+      noteDuration += noteDuration / 2; // dotted note = 1.5x
     }
 
-    // we only play the note for 90% of the duration, leaving 10% as a pause
-    tone(speakerPin, melody[thisNote], noteDuration * 0.9);
-
-    // Wait for the specified duration before playing the next note.
+    // play the note for 90% of the duration, leave 10% as a pause
+    tone(speakerPin, pitch, (unsigned long)(noteDuration * 9L / 10));
     delay(noteDuration);
-
-    // stop the waveform generation before the next note.
     noTone(speakerPin);
   }
- }
+}
 
+void tone_melody_beethoven() {
+  playMelodyPROGMEM(melody_beethoven, melody_beethoven_len, 114);
+}
 
-//==============================END SUBROUTINE TO PLAY BEETHOVEN====================================================
+void tone_melody_brahms() {
+  playMelodyPROGMEM(melody_brahms, melody_brahms_len, 85);
+}
 
-//=======================================BEGIN SUBROUTINE TO PLAY BRAHMS =================================================
-
- void tone_melody_brahms() {
-  // notes of the melody followed by the duration.
-  // a 4 means a quarter note, 8 an eighth, 16 a sixteenth, so on
-  // !!negative numbers are used to represent dotted notes,
-  // so -4 means a dotted quarter note, that is, a quarter plus an eighth!!
-  int melody[] = {
-
-    // Wiegenlied (Brahms' Lullaby)
-    // Score available at https://www.flutetunes.com/tunes.php?id=54
-
-    NOTE_G4, 4, NOTE_G4, 4, //1
-    NOTE_AS4, -4, NOTE_G4, 8, NOTE_G4, 4,
-    NOTE_AS4, 4, REST, 4, NOTE_G4, 8, NOTE_AS4, 8,
-    NOTE_DS5, 4, NOTE_D5, -4, NOTE_C5, 8,
-    NOTE_C5, 4, NOTE_AS4, 4, NOTE_F4, 8, NOTE_G4, 8,
-    NOTE_GS4, 4, NOTE_F4, 4, NOTE_F4, 8, NOTE_G4, 8,
-    NOTE_GS4, 4, REST, 4, NOTE_F4, 8, NOTE_GS4, 8,
-    NOTE_D5, 8, NOTE_C5, 8, NOTE_AS4, 4, NOTE_D5, 4, NOTE_DS5, 8,
-
-  };
-  tempo = 85;
-
-  // sizeof gives the number of bytes, each int value is composed of two bytes (16 bits)
-  // there are two values per note (pitch and duration), so for each note there are four bytes
-  int notes = sizeof(melody) / sizeof(melody[0]) / 2;
-
-  // this calculates the duration of a whole note in ms
-  int wholenote = (60000 * 4) / tempo;
-
-  int divider = 0, noteDuration = 0;
-
-  // iterate over the notes of the melody.
-  // Remember, the array is twice the number of notes (notes + durations)
-  for (int thisNote = 0; thisNote < notes * 2; thisNote = thisNote + 2) {
-
-    // calculates the duration of each note
-    divider = melody[thisNote + 1];
-    if (divider > 0) {
-      // regular note, just proceed
-      noteDuration = (wholenote) / divider;
-    } else if (divider < 0) {
-      // dotted notes are represented with negative durations!!
-      noteDuration = (wholenote) / abs(divider);
-      noteDuration *= 1.5; // increases the duration in half for dotted notes
-    }
-
-    // we only play the note for 90% of the duration, leaving 10% as a pause
-    tone(speakerPin, melody[thisNote], noteDuration * 0.9);
-
-    // Wait for the specified duration before playing the next note.
-    delay(noteDuration);
-
-    // stop the waveform generation before the next note.
-    noTone(speakerPin);
-  }
- }
-//==========================================================END OF SUBROUTINE TO PLAY BRAHMS=======================================================
+//==========================================================END MELODY SUBROUTINES=================================================================
 
 
 //=====================================================================END OF PROGRAM==================================================================

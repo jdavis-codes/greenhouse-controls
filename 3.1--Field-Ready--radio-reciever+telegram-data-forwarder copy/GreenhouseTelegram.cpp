@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <stdlib.h>
+#include <Preferences.h>
 
 GreenhouseTelegramBot::GreenhouseTelegramBot(const String& token, BotOperatingMode mode) 
     : bot(token), operatingMode(mode), logFilePath("grnhs.txt"), activeConfigIndex(-1),
@@ -26,6 +27,9 @@ void GreenhouseTelegramBot::begin(SensorMetadata* sensors, int numS,
     setSensorMetadata(sensors, numS);
     setEventMetadata(events, numE);
     setSettings(params, numP);
+
+    // Load server-side persisted alert configs
+    loadPersistedAlerts();
 
     // Call underlying setup
     setup();
@@ -127,6 +131,77 @@ void GreenhouseTelegramBot::setSettings(SettingsParameter* p, int count) {
 
 void GreenhouseTelegramBot::broadcastAlertMessage(const String& text, bool html) {
     notifyAlertChats(text);
+}
+
+void GreenhouseTelegramBot::saveAlertSettings() {
+    Preferences prefs;
+    if (prefs.begin("gh_alerts", false)) {
+        if (sensorAlerts) prefs.putBytes("sens", sensorAlerts, numSensors * sizeof(SensorAlertConfig));
+        if (eventAlerts) prefs.putBytes("evnt", eventAlerts, numEvents * sizeof(EventAlertConfig));
+        prefs.end();
+    }
+}
+
+void GreenhouseTelegramBot::loadPersistedAlerts() {
+    Preferences prefs;
+    if (prefs.begin("gh_alerts", true)) {
+        if (sensorAlerts) prefs.getBytes("sens", sensorAlerts, numSensors * sizeof(SensorAlertConfig));
+        if (eventAlerts) prefs.getBytes("evnt", eventAlerts, numEvents * sizeof(EventAlertConfig));
+        prefs.end();
+    }
+}
+
+void GreenhouseTelegramBot::evaluateAlerts() {
+    if (!logBuffer || logBuffer->getCount() == 0) return;
+    
+    LogEntry latest = logBuffer->get(logBuffer->getCount() - 1);
+
+    if (sensorAlerts && sensorMetadata) {
+        for (int i = 0; i < numSensors; i++) {
+            float value = latest.*(sensorMetadata[i].valueField);
+            SensorAlertConfig& alert = sensorAlerts[i];
+
+            bool lowTriggered = alert.lowEnabled && value <= alert.lowThreshold;
+            if (lowTriggered && !alert.lowActive) {
+                String msg = "🚨 <b>Low Alert</b>\n" + String(sensorMetadata[i].name);
+                msg += " dropped to <code>" + formatSensorReading(i, value) + "</code>\n";
+                msg += "Threshold: <code>" + formatSensorReading(i, alert.lowThreshold) + "</code>";
+                broadcastAlertMessage(msg, true);
+            }
+            alert.lowActive = lowTriggered;
+
+            bool highTriggered = alert.highEnabled && value >= alert.highThreshold;
+            if (highTriggered && !alert.highActive) {
+                String msg = "🚨 <b>High Alert</b>\n" + String(sensorMetadata[i].name);
+                msg += " rose to <code>" + formatSensorReading(i, value) + "</code>\n";
+                msg += "Threshold: <code>" + formatSensorReading(i, alert.highThreshold) + "</code>";
+                broadcastAlertMessage(msg, true);
+            }
+            alert.highActive = highTriggered;
+        }
+    }
+
+    if (eventAlerts && eventMetadata) {
+        for (int i = 0; i < numEvents; i++) {
+            bool state = latest.*(eventMetadata[i].stateField);
+            EventAlertConfig& alert = eventAlerts[i];
+
+            if (!alert.lastStateKnown) {
+                alert.lastStateKnown = true;
+                alert.lastState = state;
+                continue;
+            }
+
+            if (alert.lastState != state) {
+                if (alert.enabled) {
+                    String msg = "🔔 <b>Equipment Alert</b>\n" + String(eventMetadata[i].name);
+                    msg += " is now <code>" + String(state ? eventMetadata[i].onStr : eventMetadata[i].offStr) + "</code>";
+                    broadcastAlertMessage(msg, true);
+                }
+                alert.lastState = state;
+            }
+        }
+    }
 }
 
 bool GreenhouseTelegramBot::syncSettingValue(const char* key, float value) {
@@ -410,6 +485,14 @@ String GreenhouseTelegramBot::chatIDKey(fb::ID chatID) const {
     return String(((Text)chatID).c_str());
 }
 
+int GreenhouseTelegramBot::findSettingIndex(const char* key) const {
+    if (!key || !settings) return -1;
+    for (int i = 0; i < numSettings; i++) {
+        if (settings[i].key && strcasecmp(settings[i].key, key) == 0) return i;
+    }
+    return -1;
+}
+
 int GreenhouseTelegramBot::findSettingIndex(const String& token) const {
     String normalized = normalizeToken(token);
     for (int i = 0; i < numSettings; i++) {
@@ -616,6 +699,7 @@ void GreenhouseTelegramBot::handleMessage(fb::Update& u) {
                 alert.highActive = false;
                 if (sensorAlertChangedCb) sensorAlertChangedCb(pendingAlertSensorIndex, ALERT_THRESHOLD_HIGH, true, value);
             }
+            saveAlertSettings();
 
             String msgText = isLow ? "✅ Low alert set for " : "✅ High alert set for ";
             msgText += sensorMetadata[pendingAlertSensorIndex].name;

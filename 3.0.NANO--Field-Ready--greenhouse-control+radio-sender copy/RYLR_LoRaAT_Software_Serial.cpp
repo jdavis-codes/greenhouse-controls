@@ -7,26 +7,10 @@
 
 #include "RYLR_LoRaAT_Software_Serial.h"
 
-// Utility function to prompt for an address.
-// Prompt user at serial port to enter a non-zero address.
-int promptUserForAddress() {
-    String input("");
-    Serial.setTimeout(10000);
-    int address = 0;
-
-    while (address == 0) {
-        while (input.length() == 0) {
-            Serial.print("Enter address for device: ");
-            input = Serial.readStringUntil('\n');
-            Serial.println();
-        }
-        address = atoi(input.c_str());
-    }
-
-    Serial.setTimeout(1000);
-    Serial.print("Using address: ");
-    Serial.println(address);
-    return address;
+namespace {
+// Tiny string helpers — avoids linking printf on AVR.
+char* bufAppend(char* p, const char* s) { while (*s) *p++ = *s++; *p = '\0'; return p; }
+char* bufAppendInt(char* p, int val) { char tmp[8]; itoa(val, tmp, 10); return bufAppend(p, tmp); }
 }
 
 RYLR_LoRaAT_Software_Serial::RYLR_LoRaAT_Software_Serial()
@@ -50,29 +34,40 @@ int RYLR_LoRaAT_Software_Serial::checkStatus() {
 
 int RYLR_LoRaAT_Software_Serial::setAddress(uint16_t address) {
     if (!this->serial) return -1;
-    sprintf(this->tx_buffer, "AT+ADDRESS=%d\r\n", address);
-    this->serial->write(this->tx_buffer, strlen(this->tx_buffer));
+    char* p = bufAppend(this->tx_buffer, "AT+ADDRESS=");
+    p = bufAppendInt(p, address);
+    p = bufAppend(p, "\r\n");
+    this->serial->write(this->tx_buffer, p - this->tx_buffer);
     return resultValue(getResponse());
 }
 
 int RYLR_LoRaAT_Software_Serial::setRFParameters(uint8_t spread, uint8_t bandwidth, uint8_t coding_rate, uint8_t preamble) {
     if (!this->serial) return -1;
-    sprintf(this->tx_buffer, "AT+PARAMETER=%d,%d,%d,%d\r\n", spread, bandwidth, coding_rate, preamble);
-    this->serial->write(this->tx_buffer, strlen(this->tx_buffer));
+    char* p = bufAppend(this->tx_buffer, "AT+PARAMETER=");
+    p = bufAppendInt(p, spread); *p++ = ',';
+    p = bufAppendInt(p, bandwidth); *p++ = ',';
+    p = bufAppendInt(p, coding_rate); *p++ = ',';
+    p = bufAppendInt(p, preamble);
+    p = bufAppend(p, "\r\n");
+    this->serial->write(this->tx_buffer, p - this->tx_buffer);
     return resultValue(getResponse());
 }
 
 int RYLR_LoRaAT_Software_Serial::setRFPower(uint8_t power) {
     if (!this->serial) return -1;
-    sprintf(this->tx_buffer, "AT+CRFOP=%d\r\n", power);
-    this->serial->write(this->tx_buffer, strlen(this->tx_buffer));
+    char* p = bufAppend(this->tx_buffer, "AT+CRFOP=");
+    p = bufAppendInt(p, power);
+    p = bufAppend(p, "\r\n");
+    this->serial->write(this->tx_buffer, p - this->tx_buffer);
     return resultValue(getResponse());
 }
 
 int RYLR_LoRaAT_Software_Serial::setPassword(const char* password) {
     if (!this->serial) return -1;
-    sprintf(this->tx_buffer, "AT+CPIN=%s\r\n", password);
-    this->serial->write(this->tx_buffer, strlen(this->tx_buffer));
+    char* p = bufAppend(this->tx_buffer, "AT+CPIN=");
+    p = bufAppend(p, password);
+    p = bufAppend(p, "\r\n");
+    this->serial->write(this->tx_buffer, p - this->tx_buffer);
     return resultValue(getResponse());
 }
 
@@ -95,20 +90,36 @@ void RYLR_LoRaAT_Software_Serial::addTxData(int len, const char* data) {
 
 void RYLR_LoRaAT_Software_Serial::addTxData(int data) {
     int max_len = MAX_DATA_LEN - this->tx_index;
-
-    // Allow '\0' to be written past max_len.
-    int count = snprintf(this->tx_buffer + this->tx_index, max_len + 1, "%d", data);
-    this->tx_buffer[this->tx_index + count] = 0xff;
-    this->tx_index += min(max_len, count);
+    char tmp[8];
+    itoa(data, tmp, 10);
+    int count = strlen(tmp);
+    int copy = min(max_len, count);
+    memcpy(this->tx_buffer + this->tx_index, tmp, copy);
+    this->tx_buffer[this->tx_index + copy] = 0xff;
+    this->tx_index += copy;
 }
 
 void RYLR_LoRaAT_Software_Serial::addTxData(double data) {
+    // Manual float formatting — avoids linking float printf on AVR.
     int max_len = MAX_DATA_LEN - this->tx_index;
-
-    // Allow '\0' to be written past max_len.
-    int count = snprintf(this->tx_buffer + this->tx_index, max_len + 1, "%.4f", data);
-    this->tx_buffer[this->tx_index + count] = 0xff;
-    this->tx_index += min(max_len, count);
+    if (max_len <= 0) return;
+    char tmp[16];
+    char* t = tmp;
+    if (data < 0) { *t++ = '-'; data = -data; }
+    long whole = (long)data;
+    long frac = (long)((data - whole) * 10000 + 0.5);
+    t = bufAppendInt(t, (int)whole);
+    *t++ = '.';
+    // Pad with leading zeros for 4 decimal places
+    if (frac < 1000) *t++ = '0';
+    if (frac < 100)  *t++ = '0';
+    if (frac < 10)   *t++ = '0';
+    t = bufAppendInt(t, (int)frac);
+    int count = t - tmp;
+    int copy = min(max_len, count);
+    memcpy(this->tx_buffer + this->tx_index, tmp, copy);
+    this->tx_buffer[this->tx_index + copy] = 0xff;
+    this->tx_index += copy;
 }
 
 int RYLR_LoRaAT_Software_Serial::sendTxMessage(uint8_t to_address) {
@@ -117,8 +128,8 @@ int RYLR_LoRaAT_Software_Serial::sendTxMessage(uint8_t to_address) {
     char len_str[6];
     this->tx_message_count++;
 
-    snprintf(addr_str, 4, "%d", to_address);
-    snprintf(len_str, 6, "%d", this->tx_index);
+    itoa(to_address, addr_str, 10);
+    itoa(this->tx_index, len_str, 10);
 
     // Header.
     this->serial->print("AT+SEND=");
