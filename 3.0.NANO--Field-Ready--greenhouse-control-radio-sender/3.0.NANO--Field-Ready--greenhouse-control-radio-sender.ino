@@ -360,27 +360,37 @@ void printToMonitor() {
 }
 
 void writeToSD() {
+  DEBUG_PRINTLN(F("LOOP: start"));
+
 //=======================================================SUBROUTINE TO WRITE DATA TO MICROSD CARD=====================================
   //open the file on the microSD card and write data
   //note that only one file can be open at a time, so you have to close this one before opening another
+    DEBUG_PRINTLN(F("LOOP: readSensors"));
   myFile = SD.open("grnhs.txt", FILE_WRITE); //grnhs.txt is the file name, FILE_WRITE tells the computer this is a write operation
 
   //if the file opened okay, write to it:
   if (myFile) {
+  DEBUG_PRINTLN(F("LOOP: displayLCD"));
     DateTime now = rtc.now();
+  DEBUG_PRINTLN(F("LOOP: logicAndControl"));
     DEBUG_PRINT(F("SD write..."));
+  DEBUG_PRINTLN(F("LOOP: node.tick"));
     //with the file open, write the date, time, temperature, and humidity separated by commas
+  DEBUG_PRINTLN(F("LOOP: receiveReplies"));
     myFile.print(now.year(), DEC); myFile.print('/');
     myFile.print(now.month(), DEC); myFile.print('/');
+  DEBUG_PRINTLN(F("LOOP: printToMonitor"));
     myFile.print(now.day(), DEC); myFile.print(',');
     myFile.print(now.hour(), DEC); myFile.print(':');
     myFile.print(now.minute(), DEC); myFile.print(':');
     myFile.print(now.second(), DEC);
 
+    DEBUG_PRINTLN(F("LOOP: writeToSD"));
     myFile.print(F(","));
     myFile.print(greenhouseTemp);
     myFile.print(F(","));
     myFile.print(greenhouseHumidity);
+  DEBUG_PRINTLN(F("LOOP: end"));
 
     myFile.print(F(","));
     myFile.print(ambientTemp);
