@@ -1,0 +1,29 @@
+{   
+   "platformio-ide.toolbar": [
+        {
+            "text": "$(check)",
+            "tooltip": "Build",
+            "commands": "platformio-ide.build"
+        },
+        {
+            "text": "$(arrow-right)",
+            "tooltip": "Upload and Monitor",
+            "commands": "platformio-ide.uploadAndMonitor"
+        },
+        {
+            "text": "$(trash)",
+            "tooltip": "Clean",
+            "commands": "platformio-ide.clean"
+        },
+        {
+            "text": "$(plug)",
+            "tooltip": "Serial Monitor",
+            "commands": "platformio-ide.serialMonitor"
+        },
+        {
+            "text": "$(terminal)",
+            "tooltip": "PlatformIO Core CLI",
+            "commands": "platformio-ide.openPIOCoreCLI"
+        },
+   ]
+}

@@ -102,9 +102,37 @@ unsigned long readTime ;
 unsigned long startTime2 = 0;
 
 //variables for the timer on the mesh send function
-unsigned long meshSendInterval = 10000; // send to mesh every 10 seconds
+unsigned long meshSendInterval = 5000; // send to mesh every 5 seconds
 unsigned long meshSendTime;
 unsigned long meshStartTime = 0;
+
+void printDateToSerial(const DateTime& now) {
+  Serial.print(now.year(), DEC);
+  Serial.print('/');
+  Serial.print(now.month(), DEC);
+  Serial.print('/');
+  Serial.print(now.day(), DEC);
+  Serial.print(F(" -- "));
+  Serial.print(now.hour(), DEC);
+  Serial.print(':');
+  Serial.print(now.minute(), DEC);
+  Serial.print(':');
+  Serial.println(now.second(), DEC);
+}
+
+void writeDateToFile(File& file, const DateTime& now) {
+  file.print(now.year(), DEC);
+  file.print('/');
+  file.print(now.month(), DEC);
+  file.print('/');
+  file.print(now.day(), DEC);
+  file.print(',');
+  file.print(now.hour(), DEC);
+  file.print(':');
+  file.print(now.minute(), DEC);
+  file.print(':');
+  file.print(now.second(), DEC);
+}
 
 //====================================begin declarations for tone melody subroutines================================
 #include "pitches.h" //gets library of tones
@@ -123,7 +151,9 @@ void setup() {
 
   // wait for Serial Monitor to connect. Needed for native USB port boards only:
   Serial.begin(9600);
-  while (!Serial);
+  unsigned long serialWaitStart = millis();
+  while (!Serial && (millis() - serialWaitStart < 1500)) {
+  }
 
   meshSerial.begin(9600); // initialize the mesh UART link at 9600 baud (8N1)
   Serial.println(F("Mesh serial initialized on pins 5/6"));
@@ -265,6 +295,11 @@ insolation = map(analogRead(insolationPin), 0, 1023, 0, 100);
 //===============================================SUBROUTINE TO SEND DATA TO MESH NODE=============================================
 
 void sendToMesh() {
+  if (grnhouseTempC < -100.0f || grnhouseTempC > 150.0f) {
+    Serial.println(F("MESH TX skipped: temp out of range"));
+    return;
+  }
+
   // Format: MC,N=<node_id>,T=<temperature_c>,B=<battery_v>\n
   meshSerial.print(F("MC,N="));
   meshSerial.print(MESH_NODE_ID);
@@ -323,10 +358,7 @@ void printToMonitor(void){
 //=====================================================SUBROUTINE TO PRINT TO SERIAL MONITOR===========================================================
    // Send date to serial monitor
   DateTime now = rtc.now();
-  Serial.print(now.timestamp(DateTime::TIMESTAMP_DATE));
-  Serial.print(F(" -- "));
-  // Send time to serial monitor
-  Serial.println(now.timestamp(DateTime::TIMESTAMP_TIME));
+  printDateToSerial(now);
 
   	// Printing the temperature and humidity on the serial monitor
 
@@ -384,9 +416,7 @@ void writeToSD(void){
     DateTime now = rtc.now();
     Serial.print(F("Writing to grnhs.txt..."));
      //with the file open, write the date, time, temp, and humidity separated by commas
-    myFile.print(now.timestamp(DateTime::TIMESTAMP_DATE));
-    myFile.print(F(","));
-    myFile.print(now.timestamp(DateTime::TIMESTAMP_TIME));
+    writeDateToFile(myFile, now);
 
     myFile.print(F(","));
     myFile.print(grnhouseTemp);
