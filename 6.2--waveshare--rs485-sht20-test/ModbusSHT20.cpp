@@ -38,10 +38,7 @@ bool ModbusSHT20::readSensor(int slaveId, float &temperature, float &humidity) {
     // Some models (like XY-MD02) start at 0x01 (Temperature) and 0x02 (Humidity).
     // Let's read starting at 0x01.
     if (!ModbusRTUClient.requestFrom(slaveId, INPUT_REGISTERS, 0x01, 2)) {
-        // Fallback to holding registers if input registers fail
-        if (!ModbusRTUClient.requestFrom(slaveId, HOLDING_REGISTERS, 0x01, 2)) {
-          return false;
-        }
+        return false;
     }
     
     short rawtemperature = ModbusRTUClient.read();
@@ -53,48 +50,115 @@ bool ModbusSHT20::readSensor(int slaveId, float &temperature, float &humidity) {
     return true;
 }
 
-void ModbusSHT20::scanSlaveIds(long baudrate) {
-    Serial.println("Scanning for Modbus devices...");
-    for (int id = 1; id <= 247; id++) {
-        // Try reading a single register just to see if device responds
-        if (ModbusRTUClient.requestFrom(id, HOLDING_REGISTERS, 0x01, 1) || 
-            ModbusRTUClient.requestFrom(id, INPUT_REGISTERS, 0x01, 1)) {
-            Serial.print("Found device at Slave ID: ");
-            Serial.println(id);
-        }
-        delay(10);
-    }
-    Serial.println("Scan complete.");
-}
+  bool ModbusSHT20::readConfig(int slaveId, Config &config) {
+    uint16_t value;
 
-void ModbusSHT20::scanRegisters(int slaveId, long baudrate) {
-    Serial.print("Scanning registers for Slave ID ");
-    Serial.println(slaveId);
+    if (!readHoldingRegister(slaveId, REG_SLAVE_ID, value)) {
+      return false;
+    }
+    config.slaveId = value;
 
-    // Try scanning holding registers 0-10
-    Serial.println("Holding Registers:");
-    for (int reg = 0; reg < 10; reg++) {
-        if (ModbusRTUClient.requestFrom(slaveId, HOLDING_REGISTERS, reg, 1)) {
-             short val = ModbusRTUClient.read();
-             Serial.print("  Reg ");
-             Serial.print(reg);
-             Serial.print(": ");
-             Serial.println(val);
-        }
-        delay(10);
+    if (!readHoldingRegister(slaveId, REG_BAUD_RATE, value)) {
+      return false;
     }
-    
-     // Try scanning input registers 0-10
-    Serial.println("Input Registers:");
-    for (int reg = 0; reg < 10; reg++) {
-        if (ModbusRTUClient.requestFrom(slaveId, INPUT_REGISTERS, reg, 1)) {
-             short val = ModbusRTUClient.read();
-             Serial.print("  Reg ");
-             Serial.print(reg);
-             Serial.print(": ");
-             Serial.println(val);
-        }
-        delay(10);
+    config.baudRate = value;
+
+    if (!readHoldingRegister(slaveId, REG_TEMPERATURE_COMPENSATION, value)) {
+      return false;
     }
-    Serial.println("Register scan complete.");
-}
+    config.temperatureCompensationTenthsC = toSignedRegister(value);
+
+    if (!readHoldingRegister(slaveId, REG_HUMIDITY_COMPENSATION, value)) {
+      return false;
+    }
+    config.humidityCompensationTenthsPercent = toSignedRegister(value);
+
+    return true;
+  }
+
+  bool ModbusSHT20::writeSlaveId(int currentSlaveId, uint16_t newSlaveId) {
+    if (newSlaveId < 1 || newSlaveId > 247) {
+      return false;
+    }
+
+    return writeHoldingRegister(currentSlaveId, REG_SLAVE_ID, newSlaveId);
+  }
+
+  bool ModbusSHT20::writeBaudRate(int slaveId, uint16_t baudRate) {
+    if (!isValidBaudRate(baudRate)) {
+      return false;
+    }
+
+    return writeHoldingRegister(slaveId, REG_BAUD_RATE, baudRate);
+  }
+
+  bool ModbusSHT20::writeConfigBlock(int currentSlaveId, const Config &config) {
+    if (config.slaveId < 1 || config.slaveId > 247 || !isValidBaudRate(config.baudRate)) {
+      return false;
+    }
+
+    if (config.temperatureCompensationTenthsC < -100 || config.temperatureCompensationTenthsC > 100 ||
+        config.humidityCompensationTenthsPercent < -100 || config.humidityCompensationTenthsPercent > 100) {
+      return false;
+    }
+
+    if (!ModbusRTUClient.beginTransmission(currentSlaveId, HOLDING_REGISTERS, REG_SLAVE_ID, 4)) {
+      return false;
+    }
+
+    if (ModbusRTUClient.write(config.slaveId) != 1 ||
+        ModbusRTUClient.write(config.baudRate) != 1 ||
+        ModbusRTUClient.write(fromSignedRegister(config.temperatureCompensationTenthsC)) != 1 ||
+        ModbusRTUClient.write(fromSignedRegister(config.humidityCompensationTenthsPercent)) != 1) {
+      return false;
+    }
+
+    return ModbusRTUClient.endTransmission() == 1;
+  }
+
+  bool ModbusSHT20::writeTemperatureCompensation(int slaveId, float compensationC) {
+    if (compensationC < -10.0 || compensationC > 10.0) {
+      return false;
+    }
+
+    return writeHoldingRegister(slaveId, REG_TEMPERATURE_COMPENSATION, fromSignedRegister((int16_t)round(compensationC * 10.0)));
+  }
+
+  bool ModbusSHT20::writeHumidityCompensation(int slaveId, float compensationPercent) {
+    if (compensationPercent < -10.0 || compensationPercent > 10.0) {
+      return false;
+    }
+
+    return writeHoldingRegister(slaveId, REG_HUMIDITY_COMPENSATION, fromSignedRegister((int16_t)round(compensationPercent * 10.0)));
+  }
+
+  const char *ModbusSHT20::lastError() {
+    return ModbusRTUClient.lastError();
+  }
+
+  bool ModbusSHT20::readHoldingRegister(int slaveId, uint16_t address, uint16_t &value) {
+    long result = ModbusRTUClient.holdingRegisterRead(slaveId, address);
+    if (result < 0) {
+      return false;
+    }
+
+    value = (uint16_t)result;
+    return true;
+  }
+
+  bool ModbusSHT20::writeHoldingRegister(int slaveId, uint16_t address, uint16_t value) {
+    return ModbusRTUClient.holdingRegisterWrite(slaveId, address, value) == 1;
+  }
+
+  bool ModbusSHT20::isValidBaudRate(uint16_t baudRate) {
+    return baudRate == 9600 || baudRate == 14400 || baudRate == 19200;
+  }
+
+  int16_t ModbusSHT20::toSignedRegister(uint16_t value) {
+    return (int16_t)value;
+  }
+
+  uint16_t ModbusSHT20::fromSignedRegister(int16_t value) {
+    return (uint16_t)value;
+  }
+
