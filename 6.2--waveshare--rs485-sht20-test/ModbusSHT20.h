@@ -2,7 +2,7 @@
 #define MODBUS_SHT20_H
 
 #include <Arduino.h>
-#include <ArduinoModbus.h>
+#include <ModbusMaster.h>  // Install: "ModbusMaster" by Doc Walker (4-20mA.com)
 
 class ModbusSHT20 {
 public:
@@ -15,15 +15,20 @@ public:
 
   ModbusSHT20(int rxPin, int txPin);
   bool begin(long baudrate = 9600);
-  
-  // Read temperature and humidity (assuming slave ID 1 and registers 0x01/0x02 by default, but we'll try 0x00, 0x01, 0x02 etc)
+
+  // Read temperature and humidity from the sensor at the given Modbus slave ID.
+  // Sensor registers: 0x0001 = temperature x10, 0x0002 = humidity x10
   bool readSensor(int slaveId, float &temperature, float &humidity);
+
+  // Read/write the sensor's configuration registers (0x0101-0x0104)
   bool readConfig(int slaveId, Config &config);
   bool writeSlaveId(int currentSlaveId, uint16_t newSlaveId);
   bool writeBaudRate(int slaveId, uint16_t baudRate);
   bool writeConfigBlock(int currentSlaveId, const Config &config);
   bool writeTemperatureCompensation(int slaveId, float compensationC);
   bool writeHumidityCompensation(int slaveId, float compensationPercent);
+
+  // Human-readable description of the last Modbus error
   const char *lastError();
 
 private:
@@ -40,6 +45,8 @@ private:
 
   int _rxPin;
   int _txPin;
+  ModbusMaster _node;     // Handles Modbus RTU framing over Serial1
+  uint8_t _lastError;     // Last ModbusMaster result code
 };
 
 #endif
