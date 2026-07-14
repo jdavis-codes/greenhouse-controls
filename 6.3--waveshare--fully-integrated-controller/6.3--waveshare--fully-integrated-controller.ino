@@ -23,6 +23,7 @@ OUTPUTS:
 
 // Waveshare Board specific drivers
 #include "I2C_Driver.h"
+#include "I2C_Scanner.h"
 #include "WS_GPIO.h"
 #include "WS_Relay.h"
 #include "WS_RTC.h"
@@ -155,6 +156,7 @@ void setup()
   // Waveshare board initialization sequence:
   // Initialize I2C first, as both Relay Expander and RTC sit on it.
   I2C_Init();
+  // I2C_Scanner::scan();  // Print all I2C devices on the bus
   
   // Initialize Buzzer and RGB LED
   GPIO_Init();
